@@ -37,7 +37,6 @@
 <div id="description"></div>
 <div id="console"></div>
 <script id="vshader" type="x-shader/x-vertex">
-uniform mediump float defaultsToZero; // never set
 attribute vec2 aPosition;
 
 varying vec2 vPos;
@@ -47,9 +46,7 @@ void main()
     gl_Position = vec4(aPosition, 0, 1);
     vPos = aPosition;
 
-    if (defaultsToZero == 1.0) {
-        gl_PointSize = 1.0;
-    }
+    gl_PointSize = 16.0;
 }
 </script>
 
@@ -72,7 +69,7 @@ void main()
 "use strict";
 description(document.title);
 var wtu = WebGLTestUtils;
-var gl = wtu.create3DContext("c", {alpha: false});
+var gl = wtu.create3DContext("c");
 
 var program = wtu.setupProgram(gl, ["vshader", "fshader"], ["aPosition"]);
 
@@ -93,7 +90,7 @@ gl.drawArrays(gl.TRIANGLES, 0, 3);
 
 
 wtu.checkCanvasRect(gl, 0, 0, 1, 1, [255, 255, 0, 255]); // Bottom-left
-wtu.checkCanvasRect(gl, 63, 63, 1, 1, [0, 0, 0, 255]); // Top-right
+wtu.checkCanvasRect(gl, 63, 63, 1, 1, [0, 0, 0, 0]); // Top-right
 
 var successfullyParsed = true;
 </script>
