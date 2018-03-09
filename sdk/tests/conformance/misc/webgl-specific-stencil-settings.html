@@ -44,15 +44,12 @@ var wtu = WebGLTestUtils;
 description("Tests that stencil mask/func are validated correctly when the front state and back state differ.");
 
 var gl = wtu.create3DContext();
-var program = wtu.loadStandardProgram(gl);
-gl.useProgram(program);
-wtu.glErrorShouldBe(gl, gl.NO_ERROR, "Setup should succeed");
 
 function testStencilMaskCase(mask, error) {
     wtu.shouldGenerateGLError(gl, gl.NO_ERROR, "gl.stencilMaskSeparate(gl.FRONT, " + mask[0] + ")");
     wtu.shouldGenerateGLError(gl, gl.NO_ERROR, "gl.stencilMaskSeparate(gl.BACK,  " + mask[1] + ")");
     // If an error is generated, it should be at draw time.
-    wtu.shouldGenerateGLError(gl, error, "gl.drawArrays(gl.POINTS, 0, 0)", "drawArrays");
+    wtu.shouldGenerateGLError(gl, error, "wtu.dummySetProgramAndDrawNothing(gl)");
 }
 
 function testStencilMask(errIfMismatch) {
@@ -67,7 +64,7 @@ function testStencilFuncCase(ref, mask, error) {
     wtu.shouldGenerateGLError(gl, gl.NO_ERROR, "gl.stencilFuncSeparate(gl.FRONT, gl.ALWAYS, " + ref[0] + ", " + mask[0] + ")");
     wtu.shouldGenerateGLError(gl, gl.NO_ERROR, "gl.stencilFuncSeparate(gl.BACK,  gl.ALWAYS, " + ref[1] + ", " + mask[1] + ")");
     // If an error is generated, it should be at draw time.
-    wtu.shouldGenerateGLError(gl, error, "gl.drawArrays(gl.POINTS, 0, 0)", "drawArrays");
+    wtu.shouldGenerateGLError(gl, error, "wtu.dummySetProgramAndDrawNothing(gl)");
 }
 
 function testStencilFunc(errIfMismatch) {
@@ -159,6 +156,12 @@ function testStencilSettings(haveDepthBuffer, haveStencilBuffer, enableStencilTe
 
     wtu.glErrorShouldBe(gl, gl.NO_ERROR, "depth/stencil renderbuffer cleanup")
 }
+
+
+debug("");
+debug("Base case checks:");
+testStencilMaskCase([0, 0], gl.NO_ERROR);
+testStencilFuncCase([0, 0], [1023, 1023], gl.NO_ERROR);
 
 //                  haveDepthBuffer
 //                  |      haveStencilBuffer
