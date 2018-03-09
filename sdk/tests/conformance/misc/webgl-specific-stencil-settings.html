@@ -46,10 +46,6 @@ description("Tests that stencil mask/func are validated correctly when the front
 var gl = wtu.create3DContext();
 var program = wtu.loadStandardProgram(gl);
 gl.useProgram(program);
-var vertexObject = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, vertexObject);
-gl.enableVertexAttribArray(0);
-gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 0, 0);
 wtu.glErrorShouldBe(gl, gl.NO_ERROR, "Setup should succeed");
 
 function testStencilMaskCase(mask, error) {
@@ -118,7 +114,7 @@ function testStencilSettings(haveDepthBuffer, haveStencilBuffer, enableStencilTe
     debug("With depthbuffer=" + haveDepthBuffer +
             ", stencilbuffer=" + haveStencilBuffer +
             ", stencilTest=" + enableStencilTest +
-            ", expecting error=" + errIfMismatch +
+            ", expecting error=" + wtu.glEnumToString(errIfMismatch) +
             " for mismatching mask or func settings.");
 
     let rbo = null;
