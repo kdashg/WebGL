@@ -3021,6 +3021,13 @@ WebGL2RenderingContext includes WebGL2RenderingContextOverloads;
             underlying GL object will be automatically marked for deletion when the JS object is
             destroyed, however this method allows authors to mark an object for deletion early.
 
+            If the bound transform feedback object is deleted, it is first unbound as if
+            <code>bindTransformFeedback(TRANSFORM_FEEDBACK, null)</code> were called.
+
+            <div class="note">
+              OpenGL ES does not specify what happens in this situation until ES 3.2.
+            </div>
+
         <dt class="idl-code">[WebGLHandlesContextLoss] GLboolean isTransformFeedback(WebGLTransformFeedback? transformFeedback)
             <span class="gl-spec">(<a href="http://www.khronos.org/registry/gles/specs/3.0/es_spec_3.0.4.pdf#nameddest=section-6.1.11">OpenGL ES 3.0.4 &sect;6.1.11</a>,
             <a class="nonnormative" href="http://www.khronos.org/opengles/sdk/docs/man3/html/glIsTransformFeedback.xhtml">man page</a>)</span>
