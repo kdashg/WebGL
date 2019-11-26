@@ -125,8 +125,10 @@ function testLosingContext()
 
 function testLosingAndRestoringContext()
 {
-    if (!setupTest())
+    if (!setupTest()) {
         finishTest();
+        return;
+    }
 
     debug("");
     debug("Test losing and restoring a context.");
@@ -260,6 +262,10 @@ function testRestoredContext()
 {
     debug("Test restored context");
     shouldBeFalse("contextRestoredEventFired");
+    if (contextRestoredEventFired) {
+        // Continuing causes false-positives.
+        return;
+    }
     contextRestoredEventFired = true;
     shouldBeFalse("gl.isContextLost()");
     shouldBe("gl.getError()", "gl.NO_ERROR");
