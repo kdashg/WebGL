@@ -95,6 +95,9 @@ const RESULTS = {
 };
 
 function reportTestResultsToHarness(success, msg) {
+  if (window._didNotifyFinishedToHarness) {
+    throw new Error("Unexpected reportTestResultsToHarness after notifyFinishedToHarness");
+  }
   if (success) {
     RESULTS.pass += 1;
   } else {
