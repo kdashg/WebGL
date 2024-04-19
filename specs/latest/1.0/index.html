@@ -4610,7 +4610,6 @@ extensions.
 
 <h3><a name="CURRENT_PROGRAM_INVALIDATED">Current program invalidated upon unsuccessful link</a></h3>
 <p>
-
     In the WebGL API, if the program passed to <code>linkProgram</code> is also the current program
     object in use as defined by <code>useProgram</code>, and the link is unsuccessful, then the
     executable code referenced by the current rendering state is immediately invalidated. Further
@@ -4622,6 +4621,17 @@ extensions.
         implementations more robust. The OpenGL ES API's behavior is that the current executable is
         preserved until the current program is changed. Correctly implementing this behavior in all
         scenarios is challenging, and has led to security bugs.
+    </p>
+</div>
+
+<h3><a name="OUT_PARAMS_INIT_ZERO"><code>out</code> parameters are initialized to zero</a></h3>
+<p>
+    GLSL function <code>out</code> parameters are initialized to zero before the function body is executed.
+</p>
+<div class="note rationale">
+    <p>
+        In GLSL, when a function returns without assigning to an <code>out</code> parameters, the
+        value copied out is undefined, which is both a safety and a portability hazard.
     </p>
 </div>
 
