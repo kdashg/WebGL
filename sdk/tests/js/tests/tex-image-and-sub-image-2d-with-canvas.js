@@ -218,16 +218,18 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
       setCanvasToSemiTransparentRedGreen(ctx);
     }
 
-    function runOneIteration(canvas, useTexSubImage2D, flipY, semiTransparent, program, bindingTarget, opt_texture, opt_fontTest)
-    {
+    function runOneIteration(testcase, program, opt_texture) {
+        const {canvas, flipY, semiTransparent, useTexSubImage2D} = testcase;
+        const bindingTarget = gl[testcase.bindingTargetName];
+
         var objType = 'canvas';
-        if (canvas.transferToImageBitmap)
+        if (canvas.transferToImageBitmap) {
           objType = 'OffscreenCanvas';
-        debug('Testing ' + (useTexSubImage2D ? 'texSubImage2D' : 'texImage2D') +
-              ' with flipY=' + flipY + ' bindingTarget=' + (bindingTarget == gl.TEXTURE_2D ? 'TEXTURE_2D' : 'TEXTURE_CUBE_MAP') +
+        }
+        debug('Testing ' +
               ' canvas size: ' + canvas.width + 'x' + canvas.height +
               ' source object type: ' + objType +
-              (opt_fontTest ? " with fonts" : " with" + (semiTransparent ? " semi-transparent" : "") + " red-green"));
+              ' testcase: ' + JSON.stringify(testcase));
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         if (!opt_texture) {
             var texture = gl.createTexture();
@@ -244,7 +246,7 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
         // Set up pixel store parameters
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-        wtu.failIfGLError(gl, 'gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);');
+        wtu.failIfGLError(gl, `gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.${testcase.UNPACK_COLORSPACE_CONVERSION});`);
         var targets = [gl.TEXTURE_2D];
         if (bindingTarget == gl.TEXTURE_CUBE_MAP) {
             targets = [gl.TEXTURE_CUBE_MAP_POSITIVE_X,
@@ -285,7 +287,7 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
             // Draw the triangles
             wtu.clearAndDrawUnitQuad(gl, [0, 255, 0, 255]);
 
-            if (opt_fontTest) {
+            if (testcase.font) {
                 // check half is a solid color.
                 wtu.checkCanvasRect(
                       gl, 0, top, width, halfHeight,
@@ -413,55 +415,52 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
             ]);
         }
 
-        function runTexImageTest(bindingTarget) {
-            var program;
-            if (bindingTarget == gl.TEXTURE_2D) {
-                program = tiu.setupTexturedQuad(gl, internalFormat);
-            } else {
-                program = tiu.setupTexturedQuadWithCubeMap(gl, internalFormat);
-            }
+        cases = crossCombine(cases,
+            ['NONE', 'BROWSER_DEFAULT_WEBGL'].map(v => ({UNPACK_COLORSPACE_CONVERSION: v}))
+        );
 
-            return new Promise(function(resolve, reject) {
-                var count = repeatCount;
-                var caseNdx = 0;
-                var texture = undefined;
-                function runNextTest() {
-                    var c = cases[caseNdx];
-                    var imageDataBefore = null;
-                    if (c.init) {
-                      c.init(c.canvas.getContext('2d'), bindingTarget);
-                    }
-                    texture = runOneIteration(c.canvas, c.sub, c.flipY, c.semiTransparent, program, bindingTarget, texture, c.font);
-                    // for the first 2 iterations always make a new texture.
-                    if (count < 2) {
-                      gl.deleteTexture(texture);
-                      texture = undefined;
-                    }
-                    ++caseNdx;
-                    if (caseNdx == cases.length) {
-                        caseNdx = 0;
-                        --count;
-                        if (!count) {
-                            resolve("SUCCESS");
-                            return;
-                        }
-                    }
-                    // While we are working with Canvases, it's really unlikely that
-                    // waiting for composition will change anything here, and it's much
-                    // slower, so just dispatchPromise. If we want to test with composites,
-                    // we should test a more narrow subset of tests.
-                    wtu.dispatchPromise(runNextTest);
+        async function runTexImageTest(bindingTargetName, program) {
+            let texture;
+            for (const repeatId of Array(repeatCount).keys()) {
+              for (let testcase of cases) {
+                gl[testcase.UNPACK_COLORSPACE_CONVERSION].defined;
+                testcase = Object.assign({
+                    bindingTargetName,
+                }, testcase);
+                testcase.useTexSubImage2D = testcase.sub;
+                testcase.sub = undefined;
+
+                if (testcase.init) {
+                  testcase.init(testcase.canvas.getContext('2d'), gl[bindingTargetName]);
                 }
-                runNextTest();
-            });
+
+                texture = runOneIteration(testcase, program, texture);
+                // for the first 2 iterations always make a new texture.
+                if (repeatId < 2) {
+                  gl.deleteTexture(texture);
+                  texture = undefined;
+                }
+
+                // While we are working with Canvases, it's really unlikely that
+                // waiting for composition will change anything here, and it's much
+                // slower, so just dispatchPromise. If we want to test with composites,
+                // we should test a more narrow subset of tests.
+                await wtu.dispatchPromise();
+              }
+            }
+            gl.deleteTexture(texture);
         }
 
-        runTexImageTest(gl.TEXTURE_2D).then(function(val) {
-            runTexImageTest(gl.TEXTURE_CUBE_MAP).then(function(val) {
-                wtu.glErrorShouldBe(gl, gl.NO_ERROR, "should be no errors");
-                finishTest();
-            });
-        });
+        (async () => {
+            let program = tiu.setupTexturedQuad(gl, internalFormat);
+            await runTexImageTest('TEXTURE_2D', program);
+
+            program = tiu.setupTexturedQuadWithCubeMap(gl, internalFormat);
+            await runTexImageTest('TEXTURE_CUBE_MAP', program);
+
+            wtu.glErrorShouldBe(gl, gl.NO_ERROR, "should be no errors");
+            finishTest();
+        })();
     }
 
     return init;

@@ -1435,6 +1435,20 @@ var loadTexture = function(gl, url, callback) {
     return texture;
 };
 
+var loadTextureAsync = async function(gl, url) {
+  var texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  var image = new Image();
+  image.src = url;
+  await image.decode();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+  return texture;
+};
+
 /**
  * Checks whether the bound texture has expected dimensions. One corner pixel
  * of the texture will be changed as a side effect.
@@ -3121,6 +3135,7 @@ var setZeroTimeout = (function() {
   return setZeroTimeout;
 })();
 
+/// Usage: `await dispatchPromise();`
 function dispatchPromise(fn) {
   return new Promise((fn_resolve, fn_reject) => {
     setZeroTimeout(() => {
@@ -3594,6 +3609,7 @@ var API = {
   loadUniformBlockFragmentShader: loadUniformBlockFragmentShader,
   loadTextFileAsync: loadTextFileAsync,
   loadTexture: loadTexture,
+  loadTextureAsync: loadTextureAsync,
   log: log,
   loggingOff: loggingOff,
   makeCheckRect: makeCheckRect,

@@ -143,21 +143,19 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
         clearColorWebGL(ctx, realGreenColor);
     }
 
-    function runOneIteration(sourceDescription, useTexSubImage2D, flipY,
-                             canvas, canvasSize, canvasSetupFunction,
-                             sourceSubRectangle, expected,
-                             bindingTarget, program)
+    function runOneIteration(sourceDescription, testcase,
+                             canvas, canvasSetupFunction,
+                             program)
     {
-        sourceSubRectangleString = '';
-        if (sourceSubRectangle) {
-            sourceSubRectangleString = ', sourceSubRectangle=' + sourceSubRectangle;
-        }
+        const canvasSize = testcase.size;
+        const useTexSubImage2D = testcase.useTexSubImage2D;
+        const flipY = testcase.flipY;
+        const sourceSubRectangle = testcase.subRect;
+        const expected = testcase.expected;
+        const bindingTarget = testcase.bindingTarget;
+
         debug('');
-        debug('Testing ' + sourceDescription + ' with ' +
-              (useTexSubImage2D ? 'texSubImage2D' : 'texImage2D') +
-              ', flipY=' + flipY +
-              ', bindingTarget=' + (bindingTarget == gl.TEXTURE_2D ? 'TEXTURE_2D' : 'TEXTURE_CUBE_MAP') +
-              sourceSubRectangleString);
+        debug('Testing ' + sourceDescription + ' with ' + JSON.stringify(testcase));
 
         var loc;
         if (bindingTarget == gl.TEXTURE_CUBE_MAP) {
@@ -186,7 +184,7 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
         // Set up pixel store parameters
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-        wtu.failIfGLError(gl, 'gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);');
+        wtu.failIfGLError(gl, `gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.${testcase.pixelstoreUnpackConversion});`);
         var targets = [gl.TEXTURE_2D];
         if (bindingTarget == gl.TEXTURE_CUBE_MAP) {
             targets = [gl.TEXTURE_CUBE_MAP_POSITIVE_X,
@@ -276,15 +274,15 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
 
         ];
 
-        for (var i in cases) {
-            runOneIteration(sourceDescription, false, cases[i].flipY,
-                            canvas, cases[i].size, canvasSetupFunction,
-                            cases[i].subRect,
-                            cases[i].expected, bindingTarget, program);
-            runOneIteration(sourceDescription, true, cases[i].flipY,
-                            canvas, cases[i].size, canvasSetupFunction,
-                            cases[i].subRect,
-                            cases[i].expected, bindingTarget, program);
+        cases = crossCombine(
+            cases,
+            [{bindingTarget}],
+            [false, true].map(v => ({useTexSubImage2D: v})),
+            ['NONE', 'BROWSER_DEFAULT_WEBGL'].map(v => ({pixelstoreUnpackConversion: v}))
+        );
+        for (const testcase of cases) {
+            gl[testcase.pixelstoreUnpackConversion].defined; // Throw if undefined.
+            runOneIteration(sourceDescription, testcase, canvas, canvasSetupFunction, program);
         }
     }
 

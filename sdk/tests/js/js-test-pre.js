@@ -804,3 +804,47 @@ function* range(n) {
     yield i;
   }
 }
+/// crossCombine(Iterable[Iterable[Object]]): Array[Object]
+/// Examples:
+/// crossCombine( [{a: true}, {a: false}] )
+///   => [ {a: true}, {a: false} ];
+/// crossCombine( [{a: true}, {a: false}], [{b: 1}, {b: 2}] )
+///   => [ {a: true , b: 1},
+///        {a: true , b: 2},
+///        {a: false, b: 1},
+///        {a: false, b: 2} ];
+/// crossCombine( [{}, {a: true}], [{b: 1}, {b: 2}] )
+///   => [ {b: 1},
+///        {b: 2},
+///        {a: true, b: 1},
+///        {a: true, b: 2} ];
+/// crossCombine( [{a: true}], [{b: 1}, {b: 2}] )
+///   => [ {a: true, b: 1},
+///        {a: true, b: 2} ];
+/// crossCombine( [{}, {a: 3}], [{b: 4}], [{}, {c: 5}] )
+///   => [ {      b: 4      },
+///        {      b: 4, c: 5},
+///        {a: 3, b: 4      },
+///        {a: 3, b: 4, c: 5} ];
+function crossCombine(...args) {
+  function crossCombine2(listA, listB) {
+    const listC = [];
+    for (const a of listA) {
+      for (const b of listB) {
+        const c = Object.assign({}, a, b);
+        listC.push(c);
+      }
+    }
+    return listC;
+  }
+
+  let result = [{}];
+  let i = 0;
+  for (const arg of args) {
+    if (!arg[Symbol.iterator]) throw `In crossCombine(...args), args[${i}] is not iterable!`;
+    i += 1;
+
+    result = crossCombine2(result, arg);
+  }
+  return result;
+}

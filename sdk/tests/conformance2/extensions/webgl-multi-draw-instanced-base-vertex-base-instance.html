@@ -271,27 +271,6 @@ function* range(n) {
   }
 }
 
-function crossCombine(...args) {
-  function crossCombine2(listA, listB) {
-    const listC = [];
-    for (const a of listA) {
-      for (const b of listB) {
-        const c = Object.assign({}, a, b);
-        listC.push(c);
-      }
-    }
-    return listC;
-  }
-
-  let res = [{}];
-  while (args.length) {
-    const next = args.shift();
-    next[0].defined;
-    res = crossCombine2(res, next);
-  }
-  return res;
-}
-
 // -
 
 const PASSTHROUGH_FRAG_SRC = `\

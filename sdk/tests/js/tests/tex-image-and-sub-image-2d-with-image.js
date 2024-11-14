@@ -50,20 +50,30 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
         gl.clearColor(0,0,0,1);
         gl.clearDepth(1);
 
-        wtu.loadTexture(gl, resourcePath + "red-green.png", runTest);
+        (async () => {
+            try {
+                await runTest();
+            } catch (e) {
+                testFailed('Unexpected exception: ' + e);
+            }
+            wtu.glErrorShouldBe(gl, gl.NO_ERROR, "should be no errors");
+            finishTest();
+        })();
     }
 
-    function runOneIteration(image, useTexSubImage2D, flipY, topColor, bottomColor,
-                             sourceSubRectangle, bindingTarget, program)
-    {
-        sourceSubRectangleString = '';
+    function runOneIteration(image, testcase, bindingTarget, program) {
+        const {flipY, topColor, bottomColor,
+            sourceSubRectangle} = testcase;
+        const useTexSubImage2D = testcase.sub;
+
+        let sourceSubRectangleString = '';
         if (sourceSubRectangle) {
             sourceSubRectangleString = ' sourceSubRectangle=' + sourceSubRectangle;
         }
-        debug('Testing ' + (useTexSubImage2D ? 'texSubImage2D' : 'texImage2D') +
-              ' with ' + image.width + 'x' + image.height + ' flipY=' + flipY + ' bindingTarget=' +
+        debug('Testing ' +
+              ' with ' + image.width + 'x' + image.height + ' bindingTarget=' +
               (bindingTarget == gl.TEXTURE_2D ? 'TEXTURE_2D' : 'TEXTURE_CUBE_MAP') +
-              sourceSubRectangleString);
+              ' and ' + JSON.stringify(testcase));
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         // Disable any writes to the alpha channel
         gl.colorMask(1, 1, 1, 0);
@@ -76,7 +86,11 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
         // Set up pixel store parameters
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-        wtu.failIfGLError(gl, 'gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);');
+        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl[testcase.UNPACK_COLORSPACE_CONVERSION]);
+        let pixelMaxError = 0;
+        if (testcase.UNPACK_COLORSPACE_CONVERSION != 'NONE') {
+            pixelMaxError = 0;
+        }
         var targets = [gl.TEXTURE_2D];
         if (bindingTarget == gl.TEXTURE_CUBE_MAP) {
             targets = [gl.TEXTURE_CUBE_MAP_POSITIVE_X,
@@ -140,14 +154,14 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
             // the right color.
             debug("Checking lower left corner");
             wtu.checkCanvasRect(gl, 4, 4, 2, 2, bottomColor,
-                                "shouldBe " + bottomColor);
+                                "shouldBe " + bottomColor, pixelMaxError);
             debug("Checking upper left corner");
             wtu.checkCanvasRect(gl, 4, gl.canvas.height - 8, 2, 2, topColor,
-                                "shouldBe " + topColor);
+                                "shouldBe " + topColor, pixelMaxError);
         }
     }
 
-    function runTestOnImage(image) {
+    async function runTestOnImage(image) {
         var cases = [
             { sub: false, flipY: true, topColor: redColor, bottomColor: greenColor },
             { sub: false, flipY: false, topColor: greenColor, bottomColor: redColor },
@@ -177,31 +191,53 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
             ]);
         }
 
+        cases = crossCombine(cases,
+            ['NONE', 'BROWSER_DEFAULT_WEBGL'].map(v => ({UNPACK_COLORSPACE_CONVERSION: v}))
+        );
+
         var program = tiu.setupTexturedQuad(gl, internalFormat);
-        for (var i in cases) {
-            runOneIteration(image, cases[i].sub, cases[i].flipY,
-                            cases[i].topColor, cases[i].bottomColor,
-                            cases[i].sourceSubRectangle,
+        for (const testcase of cases) {
+            runOneIteration(image, testcase,
                             gl.TEXTURE_2D, program);
+            await wtu.dispatchPromise();
         }
         // cube map texture must be square.
         if (image.width != image.height)
             return;
         // Skip sub-rectangle tests for cube map textures for the moment.
         program = tiu.setupTexturedQuadWithCubeMap(gl, internalFormat);
-        for (var i in cases) {
-            if (!cases[i].sourceSubRectangle) {
-                runOneIteration(image, cases[i].sub, cases[i].flipY,
-                                cases[i].topColor, cases[i].bottomColor,
-                                undefined,
+        for (const testcase of cases) {
+            if (!testcase.sourceSubRectangle) {
+                runOneIteration(image, testcase,
                                 gl.TEXTURE_CUBE_MAP, program);
             }
+            await wtu.dispatchPromise();
         }
     }
 
-    function runTest(image)
-    {
-        runTestOnImage(image);
+    async function runTest() {
+        debug("")
+        debug("==================================")
+        debug("Image from png")
+        debug("")
+
+        let image = new Image();
+        image.src = resourcePath + "red-green.png";
+        try {
+            await image.decode();
+        } catch (e) {
+            testFailed("Creating Image from png failed. src: " + image.src + ", e: " + e);
+            return;
+        }
+        await runTestOnImage(image);
+
+        // -
+
+        debug("")
+        debug("==================================")
+        debug("Image from canvas2d")
+        debug("")
+
 
         imgCanvas = document.createElement("canvas");
         imgCanvas.width = 2;
@@ -226,31 +262,37 @@ function generateTest(internalFormat, pixelFormat, pixelType, prologue, resource
         imgData.data[15] = 255;
         imgCtx.putImageData(imgData, 0, 0);
 
+        image =  new Image();
+        image.onload = () => {};
+        image.onerror = () => {};
+        image.src = imgCanvas.toDataURL();
+        try {
+            await image.decode();
+        } catch (e) {
+            testFailed("Creating Image from canvas failed. src: " + image.src + ", e: " + e);
+            return;
+        }
+        await runTestOnImage(image);
+
+        // -
         // apparently Image is different than <img>.
-        var newImage =  new Image();
-        newImage.onload = function() {
-            runTest2(newImage);
-        };
-        newImage.onerror = function() {
-            testFailed("Creating image from canvas failed. Image src: " + this.src);
-            finishTest();
-        };
-        newImage.src = imgCanvas.toDataURL();
-    }
 
-    function runTest2(image) {
-        runTestOnImage(image);
+        debug("")
+        debug("==================================")
+        debug("&lt;img&gt; from canvas2d")
+        debug("")
 
-        wtu.makeImageFromCanvas(imgCanvas, function() {
-            runTest3(this);
-        });
-    }
-
-    function runTest3(image) {
-        runTestOnImage(image);
-
-        wtu.glErrorShouldBe(gl, gl.NO_ERROR, "should be no errors");
-        finishTest();
+        image = document.createElement('img');
+        image.onload = () => {};
+        image.onerror = () => {};
+        image.src = imgCanvas.toDataURL();
+        try {
+            await image.decode();
+        } catch (e) {
+            testFailed("Creating <img>> from canvas failed. src: " + image.src + ", e: " + e);
+            return;
+        }
+        await runTestOnImage(image);
     }
 
     return init;
