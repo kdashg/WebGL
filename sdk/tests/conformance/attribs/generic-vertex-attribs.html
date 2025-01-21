@@ -1,0 +1,584 @@
+<!--
+Copyright (c) 2025 The Khronos Group Inc.
+Use of this source code is governed by an MIT-style license that can be
+found in the LICENSE.txt file.
+-->
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../resources/js-test-style.css"/>
+<script src="../../js/js-test-pre.js"></script>
+<script src="../../js/webgl-test-utils.js"></script>
+</head>
+<body>
+<div id="description"></div>
+<div id="console"></div>
+<canvas id="canvas" width="2" height="2"> </canvas>
+
+<script>
+"use strict";
+description("This test checks vertexAttribPointer behaviors in WebGL.");
+
+debug("");
+debug("Canvas.getContext");
+
+// -
+
+function keyedAlternatives(key, vals) {
+    return vals.map(val => {
+        const alt = {};
+        alt[key] = val;
+        return alt;
+    });
+}
+
+// -
+
+function crossCombine(...args) {
+  function crossCombine2(listA, listB) {
+    const listC = [];
+    for (const a of listA) {
+      for (const b of listB) {
+        const c = Object.assign({}, a, b);
+        listC.push(c);
+      }
+    }
+    return listC;
+  }
+
+  let res = [{}];
+  while (args.length) {
+    const next = args.shift();
+    next[0].defined;
+    res = crossCombine2(res, next);
+  }
+  return res;
+}
+
+// -
+
+function range(n) {
+    return new Array(n).fill().map((_,i) => i);
+}
+
+// -
+
+function xorshift32(v) {
+	/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
+	v ^= v << 13;
+	v ^= (v >> 17) & ( (1 << (32-17)) - 1 );
+	v ^= v << 5;
+	return v;
+}
+
+// -
+
+function shr_u32(v,n) {
+    v >>= n;
+
+    if (n > 0) {
+        const result_mask = (1 << (32-n)) - 1;
+        v &= result_mask;
+    }
+
+    return v;
+}
+
+function PrngXorwow(init) {
+    const state = new Uint32Array(6); // 5 u32 shuffler + 1 u32 counter.
+    if (init) {
+        for (const i in state) {
+            state[i] = init[i] || 0;
+        }
+    }
+    while (!(state[0] || state[1] || state[2] || state[3])) {
+        if (init) {
+            console.error("The first four words of state must not all be 0:", state);
+        }
+        for (const i in state) {
+            state[i] = Math.floor(Math.random() * Math.pow(2,32));
+        }
+    }
+
+    this.state = () => state;
+
+    this.next = () => {
+        /* Algorithm "xorwow" from p. 5 of Marsaglia, "Xorshift RNGs" */
+        let t = state[4];
+
+        const s = state[0];
+        state[4] = state[3];
+        state[3] = state[2];
+        state[2] = state[1];
+        state[1] = s;
+
+        t ^= shr_u32(t, 2);
+        t ^= t << 1;
+        t ^= s ^ (s << 4);
+        state[0] = t;
+        state[5] += 362437;
+
+        return t + state[5];
+    };
+}
+
+// -
+
+function make_shader(gl, type, src) {
+    src = src.trim();
+
+    const s = gl.createShader(gl[type]);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+
+    const log = gl.getShaderInfoLog(s);
+    console.assert(!log, {type, log, src, lines: src.split('\n')});
+    return [s, log];
+}
+
+function make_prog(gl, vs, fs, attrib_name_by_loc) {
+    let vs_log, fs_log;
+    if (typeof vs == 'string') {
+        [vs, vs_log] = make_shader(gl, 'VERTEX_SHADER', vs);
+    }
+    if (typeof fs == 'string') {
+        [fs, fs_log] = make_shader(gl, 'FRAGMENT_SHADER', fs);
+    }
+    const p = gl.createProgram();
+    p.vs = vs;
+    p.fs = fs;
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    if (attrib_name_by_loc) {
+        Object.entries(attrib_name_by_loc).map(
+            (loc, attrib_name) => {
+                gl.bindAttribLocation(p, loc, attrib_name);
+            }
+        );
+    }
+    gl.linkProgram(p);
+
+    if (vs_log) {
+        gl.deleteShader(vs);
+    }
+    if (fs_log) {
+        gl.deleteShader(fs);
+    }
+
+    const log = gl.getProgamInfoLog(p);
+    console.assert(!log, log);
+    return [p, log];
+}
+
+// -
+
+const FS_SRC = `\
+#version 300 es
+
+in vec4 v_color;
+out vec4 o_color;
+
+void main() {
+    o_color = 10 * v_color;
+}`;
+
+function with_prog_for_shader_desc(gl, fs, attribs, fn) {
+    const attrib_decls = [];
+    const attrib_reads = [];
+    const attrib_name_by_loc = {};
+
+    for (const a of attribs) {
+        const attrib_name = `attrib${a.loc}`;
+
+        console.assert(!attrib_name_by_loc[a.loc], `Loc ${a.loc} already bound!`);
+        attrib_name_by_loc[a.loc] = attrib_name;
+
+        attrib_decls.push(
+            `in ${a.type} ${attrib_name};`
+        );
+
+        let attrib_expr;
+        if (a.type[0] == 'u') {
+            attrib_expr = `${attrib_name} / 255`;
+        } else if (a.type[0] == 'i') {
+            attrib_expr = `(${attrib_name} + 127) / 255`;
+        } else if (a.type[0] == 'b') {
+            attrib_expr = `${attrib_name} / 255`;
+        } else {
+            attrib_expr = `${attrib_name} + 0.5`
+        }
+
+        attrib_reads.push(
+            `    if (u_test_attrib_loc == ${a.loc}) { v_result = ${attrib_expr}; }`
+        );
+    }
+
+    const vs_src = `\
+#version 300 es
+
+${attrib_decls.join('\n')}
+
+uniform int u_test_attrib_loc;
+uniform int u_test_instance_id;
+out vec4 v_color;
+
+vec2 VertPos01_TRIANGLES(int vert_id) {
+    int id = vert_id % 6;
+    //y=1 p2,p3 +-+ p5
+    //          |\|
+    //y=0    p0 +-+ p1,p4
+    //        x=0 1
+    return vec2(float(id == 1 || id == 4 || id == 5),
+                float(id == 2 || id == 3 || id == 5));
+}
+
+void main() {
+    gl_PointSize = 1.0f;
+    gl_Position = vec4(2 * VertPos01_TRIANGLES(gl_VertexID) - 1, 0, 1);
+
+    if (gl_InstanceID != u_test_instance_id) {
+        gl_Position = vec4(0, 0, -2, 1); // Cull me!
+    }
+
+${attrib_reads.join('\n')}
+}
+    `;
+
+    const [p, log] = make_program(gl, vs_src, fs);
+
+    let loc = gl.getUniformLocation(p, 'u_test_attrib_loc');
+    p.u_test_attrib_loc = x => gl.uniform1i(loc, x);
+    loc = gl.getUniformLocation(p, 'u_test_instance_id');
+    p.u_test_instance_id = x => gl.uniform1i(loc, x);
+
+    gl.useProgram(p);
+
+    const ret = fn(p);
+
+    gl.deleteProgram(p);
+
+    return ret;
+}
+
+// -
+
+(async () => {
+    const canvas = new HTMLCanvasElement();
+    canvas.width = canvas.height = 1;
+    canvas.style.width = '30px';
+    canvas.style.height = '30px';
+    canvas.style.border = '1px solid blue';
+
+    const gl = canvas.getContext('webgl2', {
+        antialias: false,
+        depth: false,
+    });
+
+    // -
+
+    const [fs, fs_log] = make_shader(gl, 'FRAGMENT_SHADER', FS_SRC_VARYING_TO_UNORM);
+    const MAX_ATTRIBS = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
+
+    // -
+
+    let TYPES = 'float vec2 vec3 vec4';
+    TYPES += ' bool bvec2 bvec3 bec4';
+    TYPES += ' int ivec2 ivec3 ivec4';
+    if (gl.UNSIGNED_INT_VEC2) {
+        // webgl2
+        TYPES += ' uint uvec2 uvec3 uvec4';
+    }
+    TYPES = TYPES.split(' ');
+    //TYPES = TYPES.filter(x => x.endsWith('4'));
+
+    let DIVISORS = [0];
+    DIVISORS = [0, 1, Math.pow(2,31), Math.pow(2,32)-1];
+
+    const PER_ATTRIB_COMBOS = crossCombine(
+        //range(MAX_ATTRIBS).map(attrib_id => ({attrib_id})),
+        DIVISORS.map(divisor => ({divisor})),
+        [false, true].map(generic => ({generic}))
+    );
+
+    let VERT_ID = [0, 1, 1_000_000, Math.pow(2,30), Math.pow(2,31)-1];
+    let INST_ID = [0, 1, 1_000_000, Math.pow(2,30), Math.pow(2,31)-1];
+    INST_ID = [0, 1, 1_000_000];
+
+    const DRAW_COMBOS = crossCombine(
+        VERT_ID.map(vert_id => ({vert_id})),
+        INST_ID.map(inst_id => ({inst_id}))
+    )
+
+    // -
+
+    const searchParams = new URL(window.location).searchParams;
+    const seed = parseInt(searchParams.get('seed') || '1');
+    const rng = new PrngXorwow([seed]);
+
+    async function test2(attrib_locs, attrib_types, per_attrib_drawtime_combos) {
+        await wtu.dispatchPromise();
+
+        const shader_attribs_descs = [{}];
+        for (const loc of attrib_locs) {
+            const cur_attrib_descs = crossCombine(
+                {loc},
+                attrib_types.map(type => ({type}))
+            );
+            shader_attribs_descs = crossCombine(
+                shader_attribs_descs,
+                keyedAlternatives(`attrib${loc}`, cur_attrib_descs)
+            );
+        }
+
+        for (const shader_desc of shader_attribs_descs) {
+            const prog = prog_for_shader_desc(shader_desc);
+            gl.useProgram(prog);
+
+            for (const i of range(MAX_ATTRIBS)) {
+                gl.vertexAttrib4fv(i, [0,0,0,0]);
+            }
+
+            // -
+
+            const draw_attribs_descs = [{}];
+        for (const loc of attrib_locs) {
+            const cur_attrib_descs = crossCombine(
+                {loc},
+                per_attrib_drawtime_combos
+            );
+            draw_attribs_descs = crossCombine(
+                draw_attribs_descs,
+                keyedAlternatives(`attrib${loc}`, cur_attrib_descs)
+            );
+        }
+
+            for (const [attrib_name,attrib] of Object.entries(shader_desc)) {
+                const type = attrib.type[0];
+                let vals = range(4).map(_ => rng.next());
+                if (type[0] == 'u') {
+                    vals = vals.map(x => x % 256); // [0,255]
+                    gl.vertexAttribI4uiv(attrib.loc, vals);
+                    attrib.expected = vals;
+                } else if (type[0] == 'i') {
+                    vals = vals.map(x => -(x % 128)); // [-127,0]
+                    gl.vertexAttribI4iv(attrib.loc, vals);
+                    attrib.expected = vals.map(x => 127 + x);
+                } else if (type[0] == 'b') {
+                    vals = vals.map(x => x & 0xff);
+                    vals = vals.map(x => (x & 0x1) ? x : 0); // [0,255]
+                    gl.vertexAttrib4fv(attrib.loc, vals);
+                    attrib.expected = vals.map(x => x ? 1 : 0);
+                } else {
+                    vals = vals.map(x => ((x % 1_000_001) / 1_000_000)) - 0.5; // [-0.5,0.5]
+                    gl.vertexAttrib4fv(attrib.loc, vals);
+                    attrib.expected = vals.map(x => Math.round((x + 0.5) * 255));
+                    attrib.max_diff = 1;
+                }
+                attrib.vals = vals;
+            }
+
+            const pixel = new Uint8Array(4);
+
+            for (const draw_combo of DRAW_COMBOS) {
+                prog.u_test_instance_id(draw_combo.inst_id);
+                const COUNT = 1;
+
+                for (const [attrib_name,attrib] of Object.entries(shader_desc)) {
+                    debug('Per attrib: ' + JSON.stringify({draw_combo,attrib}));
+                    prog.u_test_attrib_loc(attrib.loc);
+                    gl.clearBufferfv(gl.COLOR, 0, [0,0,0,0]);
+
+                    gl.drawArraysInstanced(gl.POINTS, draw_combo.vert_id, COUNT, draw_combo.inst_id+1);
+                    gl.readPixels(0,0,1,1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+
+                    const was = pixel;
+                    expectArray(was, attrib.expected, attrib.max_diff);
+                }
+            }
+
+            // -
+
+            gl.deleteProgram(prog);
+        }
+    }
+
+    // -
+
+    const FEWER_ATTRIB_LOCS_LIST = [
+        [0],
+        [1],
+        [0,1],
+        [1,2],
+        [0,MAX_ATTRIBS-1],
+        [1,MAX_ATTRIBS-1],
+    ];
+    for (const attrib_locs of FEWER_ATTRIB_LOCS_LIST) {
+        test2(attrib_locs, TYPES);
+    }
+
+    const FEWER_TYPES = TYPES.filter(x => x.endsWith('4'));
+    test2(range(MAX_ATTRIBS), FEWER_TYPES);
+})();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+var wtu = WebGLTestUtils;
+var gl = wtu.create3DContext("canvas");
+if (!gl) {
+  testFailed("context does not exist");
+} else {
+  testPassed("context exists");
+
+  debug("");
+  debug("Checking gl.vertexAttribPointer.");
+
+  if (!gl.FIXED) {
+    gl.FIXED = 0x140C;
+  }
+
+  var vertexObject = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexObject);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.STATIC_DRAW);
+
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  gl.vertexAttribPointer(0, 1, gl.FLOAT, false, 0, 4);
+  wtu.glErrorShouldBe(gl, gl.INVALID_OPERATION,
+      "vertexAttribPointer should fail if no buffer is bound and `offset` is non-zero.");
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexObject);
+  gl.vertexAttribPointer(0, 1, gl.FLOAT, false, 0, 0);
+  wtu.glErrorShouldBe(gl, gl.NO_ERROR);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  gl.vertexAttribPointer(0, 1, gl.FLOAT, false, 0, 0);
+  wtu.glErrorShouldBe(gl, gl.NO_ERROR,
+      "vertexAttribPointer should succeed if no buffer is bound and `offset` is zero.");
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexObject);
+
+
+  if (wtu.getDefault3DContextVersion() < 2) {
+    gl.vertexAttribPointer(0, 1, gl.INT, 0, 0, 0);
+    wtu.glErrorShouldBe(gl, gl.INVALID_ENUM,
+            "vertexAttribPointer should not support INT");
+    gl.vertexAttribPointer(0, 1, gl.UNSIGNED_INT, 0, 0, 0);
+    wtu.glErrorShouldBe(gl, gl.INVALID_ENUM,
+            "vertexAttribPointer should not support UNSIGNED_INT");
+  }
+  gl.vertexAttribPointer(0, 1, gl.FIXED, 0, 0, 0);
+  wtu.glErrorShouldBe(gl, gl.INVALID_ENUM,
+          "vertexAttribPointer should not support FIXED");
+
+  var checkVertexAttribPointer = function(
+      gl, err, reason, size, type, normalize, stride, offset) {
+    gl.vertexAttribPointer(0, size, type, normalize, stride, offset);
+    var succeeded = (err == gl.NO_ERROR);
+    wtu.glErrorShouldBe(gl, err,
+        "gl.vertexAttribPointer(0, " + size +
+        ", gl." + wtu.glEnumToString(gl, type) +
+        ", " + normalize +
+        ", " + stride +
+        ", " + offset +
+        ") should " + (succeeded ? "succeed " : "fail ") + reason);
+    if (succeeded) {
+      shouldBe('gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_SIZE)', size.toString());
+      shouldBe('gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_TYPE)', 'gl.' + wtu.glEnumToString(gl, type));
+      shouldBe('gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_NORMALIZED)', normalize.toString());
+      shouldBe('gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_STRIDE)', stride.toString());
+      shouldBe('gl.getVertexAttribOffset(0, gl.VERTEX_ATTRIB_ARRAY_POINTER)', offset.toString());
+    }
+  }
+
+  var types = [
+    { type:gl.BYTE,           bytesPerComponent: 1 },
+    { type:gl.UNSIGNED_BYTE,  bytesPerComponent: 1 },
+    { type:gl.SHORT,          bytesPerComponent: 2 },
+    { type:gl.UNSIGNED_SHORT, bytesPerComponent: 2 },
+    { type:gl.FLOAT,          bytesPerComponent: 4 },
+  ];
+
+  if (wtu.getDefault3DContextVersion() >= 2) {
+    types.push(...[
+        { type:gl.INT,                         bytesPerComponent: 4 },
+        { type:gl.UNSIGNED_INT,                bytesPerComponent: 4 },
+        { type:gl.HALF_FLOAT,                  bytesPerComponent: 2 },
+        { type:gl.INT_2_10_10_10_REV,          bytesPerComponent: 4, minSize: 4 },
+        { type:gl.UNSIGNED_INT_2_10_10_10_REV, bytesPerComponent: 4, minSize: 4 },
+      ]);
+  }
+
+  for (var ii = 0; ii < types.length; ++ii) {
+    var info = types[ii];
+    debug("");
+    for (var size = 1; size <= 4; ++size) {
+      debug("");
+      debug("checking: " + wtu.glEnumToString(gl, info.type) + " with size " + size);
+      var bytesPerElement = size * info.bytesPerComponent;
+      var offsetSet = [
+          0,
+          1,
+          info.bytesPerComponent - 1,
+          info.bytesPerComponent,
+          info.bytesPerComponent + 1,
+          info.bytesPerComponent * 2];
+      for (var jj = 0; jj < offsetSet.length; ++jj) {
+        var offset = offsetSet[jj];
+        for (var kk = 0; kk < offsetSet.length; ++kk) {
+          var stride = offsetSet[kk];
+          var err = gl.NO_ERROR;
+          var reason = ""
+          if (offset % info.bytesPerComponent != 0) {
+            reason = "because offset is bad";
+            err = gl.INVALID_OPERATION;
+          }
+          if (stride % info.bytesPerComponent != 0) {
+            reason = "because stride is bad";
+            err = gl.INVALID_OPERATION;
+          }
+          if (size < info.minSize) {
+            reason = "because size < minSize";
+            err = gl.INVALID_OPERATION;
+          }
+          checkVertexAttribPointer(
+              gl, err, reason, size, info.type, false, stride, offset);
+        }
+        var stride = Math.floor(255 / info.bytesPerComponent) * info.bytesPerComponent;
+
+        if (offset == 0) {
+          checkVertexAttribPointer(
+              gl, size < info.minSize ? gl.INVALID_OPERATION : gl.NO_ERROR, "at stride limit",
+              size, info.type, false, stride, offset);
+          checkVertexAttribPointer(
+              gl, size < info.minSize ? [gl.INVALID_OPERATION, gl.INVALID_VALUE] : gl.INVALID_VALUE, "over stride limit",
+              size, info.type, false,
+              stride + info.bytesPerComponent, offset);
+        }
+      }
+    }
+  }
+}
+
+debug("");
+var successfullyParsed = true;
+
+</script>
+<script src="../../js/js-test-post.js"></script>
+
+</body>
+</html>
