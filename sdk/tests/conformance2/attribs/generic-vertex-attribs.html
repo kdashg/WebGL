@@ -1,0 +1,779 @@
+<!--
+Copyright (c) 2025 The Khronos Group Inc.
+Use of this source code is governed by an MIT-style license that can be
+found in the LICENSE.txt file.
+-->
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset=utf-8>
+<link rel="stylesheet" href="../../resources/js-test-style.css"/>
+<script src="../../js/js-test-pre.js"></script>
+<script src="../../js/webgl-test-utils.js"></script>
+</head>
+<body>
+<div id="description"></div>
+<div id="console"></div>
+
+<script>
+"use strict";
+description("This test checks vertexAttribPointer behaviors in WebGL.");
+
+debug("");
+
+// -
+
+function xorshift32(v) {
+	/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
+	v ^= v << 13;
+	v ^= (v >> 17) & ( (1 << (32-17)) - 1 );
+	v ^= v << 5;
+	return v;
+}
+
+const GL = globalThis.WebGL2RenderingContext || WebGLRenderingContext;
+
+/**
+ * @param {string|GLenum} enum_str_or_val
+ * @returns {GLenum}
+ */
+ function GL_(enum_str_or_val) {
+    let ret = enum_str_or_val;
+    if (typeof(ret) == 'string') {
+        ret = GL[ret];
+    }
+    if (ret === undefined) throw enum_str_or_val;
+    return ret;
+}
+
+// -
+
+/**
+ * @param {WebGLRenderingContext} gl
+ * @param {string} target
+ * @returns {WebGLBuffer}
+ */
+ function gl_createBufferData(gl, target, data, usage='STATIC_DRAW', ...more) {
+    const ret = gl.createBuffer();
+    gl.bindBuffer(GL_(target), ret);
+    gl.bufferData(GL_(target), data, GL_(usage), ...more);
+    ret.usage = usage;
+    return ret;
+}
+
+// -
+
+/**
+ * @param {WebGL2RenderingContext} gl
+ * @param {number} attrib_id
+ * @param {GlVaoPerAttribState} state
+ */
+function gl_vertexAttribState(gl, attrib_id, state) {
+    // For testing, set `divisor` even if `!is_array`.
+    if (gl.vertexAttribDivisor) {
+        gl.vertexAttribDivisor(attrib_id, state.divisor);
+    } else if (state.divisor) {
+        throw {gl, attrib_id, state};
+    }
+
+    state.is_array.defined;
+    if (!state.is_array) {
+        gl.disableVertexAttribArray(attrib_id);
+    } else {
+        gl.enableVertexAttribArray(attrib_id);
+        state.vap.defined;
+    }
+
+    if (state.vap) {
+        const vap = state.vap;
+
+        vap.buffer.defined;
+        gl.bindBuffer(gl.ARRAY_BUFFER, vap.buffer);
+
+        vap.size.defined;
+        vap.type.defined;
+        vap.stride.defined;
+        vap.offset.defined;
+        if (vap.integer) {
+            console.assert(!vap.normalized, {msg: '.integer && .normalized', gl, attrib_id, state});
+            gl.vertexAttribIPointer(attrib_id, vap.size, GL_(vap.type),
+                                    vap.stride, vap.offset);
+        } else {
+            vap.normalized.defined;
+            gl.vertexAttribPointer(attrib_id, vap.size, GL_(vap.type),
+                                    vap.normalized, vap.stride, vap.offset);
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    }
+}
+
+// -
+
+const SYNC_CHECK_LOGS = false;
+
+/**
+ * @param {WebGLRenderingContext} gl
+ * @param {string} type
+ * @param {string} src
+ * @returns {WebGLShader}
+ */
+function gl_compileShader2(gl, type, src) {
+    src = src.trim();
+
+    const s = gl.createShader(GL_(type));
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+
+    if (SYNC_CHECK_LOGS) {
+        const log = gl.getShaderInfoLog(s);
+        console.assert(!log, {type, log, src});
+    }
+
+    return s;
+}
+
+// -
+
+/**
+ * @template T
+ * @param {WebGLRenderingContext} gl
+ * @param {string} type
+ * @param {string|WebGLShader} src_or_shader
+ * @param {(shader:WebGLShader) => Promise<T>} fn_with_compiled
+ * @returns {T} from `fn_with_compiled`
+ */
+async function with_shader(gl, type, src_or_shader, fn_with_compiled) {
+    let temp = null;
+    let shader;
+    if (typeof(src_or_shader) == 'string') {
+        shader = temp = gl_compileShader2(gl, type, src_or_shader);
+    } else {
+        shader = src_or_shader;
+    }
+
+    const ret = await fn_with_compiled(shader);
+
+    if (temp) {
+        gl.deleteShader(temp);
+    }
+
+    return ret;
+}
+
+/**
+ * @template T,U
+ * @param {WebGLRenderingContext} gl
+ * @param {string|WebGLShader} vs
+ * @param {string|WebGLShader} fs
+ * @param {(p:WebGLProgram) => Promise<T>} fn_with_unlinked
+ * @param {(p:WebGLProgram) => Promise<U>} fn_with_linked
+ * @returns {Promise<T|U>} Like `fn_with_unlinked() || fn_with_linked()`
+ */
+async function with_prog(gl, vs, fs, fn_with_unlinked, fn_with_linked) {
+    const p = gl.createProgram();
+
+    with_shader(gl, 'VERTEX_SHADER', vs, compiled => {
+        p.vs = compiled;
+        gl.attachShader(p, compiled);
+    });
+    with_shader(gl, 'FRAGMENT_SHADER', fs, compiled => {
+        p.fs = compiled;
+        gl.attachShader(p, compiled);
+    });
+
+    let ret;
+    if (fn_with_unlinked) {
+        ret = await fn_with_unlinked(p);
+    }
+
+    if (fn_with_linked && ret === undefined) {
+        gl.linkProgram(p);
+
+        if (SYNC_CHECK_LOGS) {
+            const log = gl.getProgamInfoLog(p);
+            console.assert(!log, {log, p});
+        }
+
+        ret = await fn_with_linked(p);
+    }
+
+    gl.deleteProgram(p);
+
+    return ret;
+}
+
+// -
+
+function expr_uvec4_bitcast_from(glsl_type, glsl_ident) {
+    let type_prefix = glsl_type[0];
+    if (type_prefix == 'v') {
+        type_prefix = 'f';
+    }
+    let len = glsl_type[glsl_type.length-1];
+    if (len != len) { // NaN
+        len = 1;
+    }
+    let bitcast_fn = 'uint';
+    if (type_prefix == 'f') {
+        bitcast_fn = 'floatBitsToUint';
+    }
+    const args = range(4).map(
+        i => (i < len) ? `${bitcast_fn}(${glsl_ident}[${i}])` : `0u`
+    );
+
+    return `uvec4(${args.join(', ')})`;
+}
+
+/**
+ * @param {WebGL2RenderingContext} gl
+ * @param {object.<number,string>} glsl_type_by_attrib_id
+ * @param {(prog:WebGLProgram) => Promise<void>} fn
+ */
+async function with_prog_for_shader_config(gl, glsl_type_by_attrib_id, fn) {
+    const vs_decl_lines = [];
+    const vs_main_lines = [];
+
+    for (const [attrib_id, glsl_type] of Object.entries(glsl_type_by_attrib_id)) {
+        const attrib_name = `attrib${attrib_id}`;
+        vs_decl_lines.push(
+            `layout(location=${attrib_id}) in highp ${attrib.glsl_type} ${attrib_name};`,
+        );
+        vs_main_lines.push(
+            `if (u_select_attrib_id == ${attrib_id}) {`,
+            `    v_result = ${expr_uvec4_bitcast_from(attrib.glsl_type, attrib_name)};`,
+            `}`
+        );
+    }
+
+    const vs_src = /* glsl */ `\
+#version 300 es
+
+precision highp int;
+
+uniform int u_select_instance_id;
+uniform int u_select_attrib_id;
+flat out uvec4 v_result;
+
+// -
+
+// vs_decl_lines {
+${vs_decl_lines.join('\n')}
+// } vs_decl_lines
+
+// -
+
+vec2 VertPos01_TRIANGLES(int vert_id) {
+    int id = vert_id % 6;
+    //y=1 p2,p3 +-+ p5
+    //          |\|
+    //y=0    p0 +-+ p1,p4
+    //        x=0 1
+    return vec2(float(id == 1 || id == 4 || id == 5),
+                float(id == 2 || id == 3 || id == 5));
+}
+
+void main() {
+    gl_PointSize = 1.0f;
+    gl_Position = vec4(2 * VertPos01_TRIANGLES(gl_VertexID) - 1, 0, 1);
+
+    if (gl_InstanceID != u_select_instance_id) {
+        gl_Position.z = -2; // Cull me!
+    }
+
+    v_result = uvec4(0u);
+
+    // -
+    // vs_main_lines {
+    ${vs_main_lines.join('\n    ')}
+    // } vs_main_lines
+}
+    `;
+
+    const fs_src = /* glsl */ `\
+#version 300 es
+
+precision highp int;
+
+flat in uvec4 v_result;
+out uvec4 o_result;
+
+void main() {
+    o_result = v_result;
+}
+    `;
+
+    with_prog(gl, vs_src, fs_src,
+        prelink_prog => {},
+        async prog => {
+            gl.useProgram(prog);
+            prog.u_select_instance_id = x => gl.uniform1i(gl.getUniformLocation(prog, 'u_select_instance_id'), x);
+            prog.u_select_attrib_id = x => gl.uniform1i(gl.getUniformLocation(prog, 'u_select_attrib_id'), x);
+
+            await fn(prog);
+        }
+    );
+}
+
+// -
+
+const NORMALIZE_ALL = {
+    denorms: true,
+    neg_zero: true,
+    infs: true,
+    nans: true,
+};
+
+/**
+ * @param {number} s_bits
+ * @param {number} e_bits
+ * @param {number} m_bits
+ */
+function make_float_info(s_bits, e_bits, m_bits) {
+    const BIT_COUNTS = [s_bits, e_bits, m_bits];
+    const S_MASK = bitsmask(s_bits) << (e_bits + m_bits);
+    const E_MASK = bitsmask(e_bits) << m_bits;
+    const M_MASK = bitsmask(m_bits);
+    const E_BIAS = bitsmask(e_bits - 1);
+    const E_INF_NAN = bitsmask(e_bits);
+    const M_DIV = M_MASK + 1;
+    return {
+        BIT_COUNTS: BIT_COUNTS.slice(),
+        S_MASK,
+        E_MASK,
+        M_MASK,
+        E_BIAS,
+        E_INF_NAN,
+        M_DIV,
+
+        /** @type {(packed:number,options=NORMALIZE_ALL) => number} */
+        normalize: (packed, options=NORMALIZE_ALL) =>  {
+            if (options.denorms && packed & E_MASK == 0) {
+                packed ^= packed & M_MASK;
+            }
+            if (options.neg_zero && packed == S_MASK) {
+                packed = 0;
+            }
+            if (packed & E_MASK == E_MASK) {
+                if (options.infs && packed & M_MASK == 0) {
+                    //packed ^= 1 << m_bits;
+                    //packed |= M_MASK;
+                    packed ^= bitsmask(1+mbits);
+                }
+                if (options.nans && packed & M_MASK != 0) {
+                    packed ^= 1 << m_bits;
+                }
+            }
+            return packed;
+        },
+    };
+}
+
+// -
+
+const F16_INFO = make_float_info(1, 5, 10);
+const F32_INFO = make_float_info(1, 8, 23);
+
+const FLOAT_INFO_BY_CTOR = new Map([
+    [Float16Array, F16_INFO],
+    [Float32Array, F32_INFO],
+]);
+
+// -
+
+/**
+ * @param {TypedArray} dest
+ * @returns {TypedArray} - Returns dest, modified in-place.
+ */
+function remapToRealValues(dest, options=NORMALIZE_ALL) {
+    const float_info = FLOAT_INFO_BY_CTOR.get(dest.constructor);
+    if (float_info) {
+        // Float16Array -> Uint16Array
+        const uint_view_ctor = globalThis[data.constructor.name.replace('Float', 'Uint')];
+        const uint_view = abv_cast(uint_view_ctor, dest);
+        for (const i in uint_view) {
+            uint_view[i] = float_info.normalize(uint_view[i], options);
+        }
+    }
+    return dest;
+}
+
+// -
+
+function type_prefix_from_glsl_type(glsl_type) {
+    // Good news! We don't have to test bools:
+    // Vertex inputs (attribs) can't be boolean types, opaque types, arrays, or structs.
+    // (ESSL 3.0 spec $4.3.4 "Input Variables")
+    // This function still handles them `(bool | bvec4) => b`,
+    // but for e.g. uniforms, bools can be sent any of f/i/u.
+    let type_prefix = glsl_type[0];
+    if ('vm'.includes(type_prefix)) {
+        // E.g. (f)vec4, (f)mat4.
+        type_prefix = 'f';
+    }
+    return type_prefix;
+}
+console.assert('b' == type_prefix_from_glsl_type('bool'));
+console.assert('b' == type_prefix_from_glsl_type('bvec4'));
+console.assert('f' == type_prefix_from_glsl_type('float'));
+console.assert('f' == type_prefix_from_glsl_type('vec4'));
+console.assert('f' == type_prefix_from_glsl_type('mat4'));
+console.assert('i' == type_prefix_from_glsl_type('int'));
+console.assert('i' == type_prefix_from_glsl_type('ivec4'));
+console.assert('u' == type_prefix_from_glsl_type('uint'));
+console.assert('u' == type_prefix_from_glsl_type('uvec4'));
+
+// -
+
+call(async () => {
+    const DRNG = getDrng();
+    const MAX_BUFFER_FETCH_ID = 100_000;
+
+    const gl = (new HTMLCanvasElement()).getContext('webgl2');
+    const jsgl = new JSGL(gl);
+    const MAX_VERTEX_ATTRIBS = gl.getParameter(GL.MAX_VERTEX_ATTRIBS);
+
+    // -
+
+    const BUFFER_BY_DATA_CTOR = new Map(
+        [
+            Float16Array,
+            Float32Array,
+            Uint32Array,
+        ].map(ctor => {
+            const data = new ctor(4*MAX_BUFFER_FETCH_ID);
+            DRNG.getRandomValues(data);
+            remapToRealValues(data);
+
+            const buffer = gl_createBufferData(gl, 'ARRAY_BUFFER', data);
+            return [ctor, buffer];
+        })
+    );
+
+    // -
+
+    // VAV: e.g. VertexAttrib4fV, aka Vertex Attrib Values
+    /** @type {Map.<string,{ prefix_type:string, fn:(this:WebGL2RenderingContext, ...args) => void, data: TypedArray}>} */
+    const VAV_INFO_BY_PREFIX_TYPE = new Map(
+        [
+            {prefix_type: 'f', gl_vertexAttrib4v: gl.vertexAttrib4fv  , data: Float32Array},
+            {prefix_type: 'i', gl_vertexAttrib4v: gl.vertexAttribI4iv , data: Int32Array  },
+            {prefix_type: 'u', gl_vertexAttrib4v: gl.vertexAttribI4uiv, data: Uint32Array },
+        ].map(
+            info => {
+                info.data = new info.data(4);
+                DRNG.getRandomValues(info.data);
+                remapToRealValues(info.data);
+                return [info.prefix_type, info];
+            }
+        )
+    );
+
+    // -
+
+    // VAP means VertexAttribI?Pointer.
+    // vap(integer:false) => vertexAttribPointer
+    // vap(integer:true ) => vertexAttribIPointer
+
+    // vap(type:BYTE,integer:true) => load<i8>(), e.g. 0x7f => +127i
+    // vap(type:BYTE,integer:true) => load<i8>(), e.g. 0x80 => -128i
+
+    // vap(type:BYTE,integer:false,normalized:false) => load<i8>()*1.0f, e.g. 0x7f => +127.0f
+    // vap(type:BYTE,integer:false,normalized:false) => load<i8>()*1.0f, e.g. 0x80 => -128.0f
+
+    // vap(type:BYTE,integer:false,normalized:true) => max(-127,load<i8>())/127, e.g. 0x7e =>~+0.99f
+    // vap(type:BYTE,integer:false,normalized:true) => max(-127,load<i8>())/127, e.g. 0x7f => +1.00f
+    // vap(type:BYTE,integer:false,normalized:true) => max(-127,load<i8>())/127, e.g. 0x80 => -1.00f (clamped)
+    // vap(type:BYTE,integer:false,normalized:true) => max(-127,load<i8>())/127, e.g. 0x81 => -1.00f
+    // vap(type:BYTE,integer:false,normalized:true) => max(-127,load<i8>())/127, e.g. 0x82 =>~-0.99f
+    // vap(type:BYTE,integer:false,normalized:true) => max(-127,load<i8>())/127, e.g. 0x00 =>  0.00f
+
+    const VAP_VARIANTS = [].concat(
+        crossCombine(
+            [
+                'FLOAT',
+                'HALF_FLOAT',
+            ].map(type => ({type})),
+            [1,2,3,4].map(size => ({size})),
+            [
+                {integer: false, normalized: false},
+                //{integer: false, normalized: true}, // Should have no effect
+            ]
+        ),
+
+        crossCombine(
+            [
+                'BYTE',
+                'SHORT',
+                'UNSIGNED_BYTE',
+                'UNSIGNED_SHORT',
+                'INT',
+                'UNSIGNED_INT',
+            ].map(type => ({type})),
+            [1,2,3,4].map(size => ({size})),
+            [
+                {integer: false, normalized: false    },
+                {integer: false, normalized: true     },
+                {integer: true , normalized: undefined},
+            ]
+        ),
+
+        crossCombine(
+            [
+                'INT_2_10_10_10_REV',
+                'UNSIGNED_INT_2_10_10_10_REV',
+            ].map(type => ({type})),
+            [{size: 4, integer: false}],
+            [true, false].map(normalized => ({normalized}))
+        )
+    );
+
+    // Sort by f/i/u, because we can't feed e.g. `FLOAT` into `int`.
+    // Pick the right buffer too. We don't want to 'cast' u32-to-f32,
+    // since that would sometimes give e.g. non-finites.
+    const VAP_VARIANTS_BY_TYPE_PREFIX = new Map(
+        ['f', 'i', 'u'].map(type_prefix => [type_prefix, []])
+    );
+    for (const vap of VAP_VARIANTS) {
+        let type_prefix = 'f';
+        if (vap.integer) {
+            if (vap.type.includes('UNSIGNED')) {
+                type_prefix = 'u';
+            } else {
+                type_prefix = 'i';
+            }
+        }
+        vaps = VAP_VARIANTS_BY_TYPE_PREFIX.get(type_prefix);
+        vaps.push(vap);
+
+        const DATA_CTOR_OVERRIDE_BY_ATTRIB_TYPE = {
+            'FLOAT': Float32Array,
+            'HALF_FLOAT': Float16Array,
+        };
+        const data_ctor = DATA_CTOR_OVERRIDE_BY_ATTRIB_TYPE[vap.type] || Uint32Array;
+
+        vap.buffer = BUFFER_BY_DATA_CTOR.get(data_ctor) || throwv({data_type, vap});
+        vap._type_prefix = type_prefix;
+    }
+
+    // -
+
+    let DIVISORS = [0];
+    DIVISORS = [0, 1, Math.pow(2,31), Math.pow(2,32)-1];
+
+    const PER_ATTRIB_DRAWTIME_COMBOS = crossCombine(
+        //range(MAX_VERTEX_ATTRIBS).map(attrib_id => ({attrib_id})),
+        DIVISORS.map(divisor => ({divisor})),
+        [false, true].map(is_array => ({is_array}))
+    );
+
+    let VERT_ID = [0, 1, MAX_BUFFER_FETCH_ID-1, Math.pow(2,30), Math.pow(2,31)-1];
+    let INST_ID = [0, 1, MAX_BUFFER_FETCH_ID-1];
+
+    const DRAW_CALL_COMBOS = crossCombine(
+        VERT_ID.map(vert_id => ({vert_id})),
+        INST_ID.map(inst_id => ({inst_id}))
+    )
+
+    // -
+
+    const fb = gl.createFramebuffer();
+    fb.tex = gl.createTexture();
+    fb.tex.format = 'RGBA32UI';
+    gl.bindTexture(gl.TEXTURE_2D, fb.tex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl[fb.tex.format], 1, 1);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fb.tex, 0);
+
+    function clearBuffer() {
+        gl.clearBufferuiv(gl.COLOR, 0, [0,0,0,0]);
+    }
+    function readPixel() {
+        const data = new Uint32Array(4);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_INT, data);
+        return data;
+    }
+
+    const FAKE_NULL_BUFFER = gl_createBufferData(gl, 'ARRAY_BUFFER', 1);
+    const INIT_VERTEX_ATTRIB_STATE = {
+        divisor: 0,
+        is_array: false,
+        vap: {
+            integer: false,
+            type: 'FLOAT',
+            size: 4,
+            normalized: false,
+            stride: 0,
+            offset: 0,
+            buffer: FAKE_NULL_BUFFER,
+        },
+    };
+
+    // -
+
+    async function test_with(attrib_ids, glsl_types) {
+        await wtu.dispatchPromise();
+
+        debug(`\
+
+        attrib_ids: [${attrib_ids}]
+        glsl_types: [${glsl_types}]`);
+
+        // The big reason we can't test *everything*: This part is O(2^N):
+        /**
+         * @typedef {{attrib_id:number, glsl_type:string}} AttribConfig
+         * @typedef {string} AttribName
+         * @typedef {object.<AttribName,AttribConfig>} ShaderConfig
+         * @type {ShaderConfig[]}
+         */
+        const shader_configs = [{}];
+        for (const attrib_id of attrib_ids) {
+            const attrib_configs_for_attrib_id = glsl_types.map(glsl_type => ({attrib_id, glsl_type}));
+            const new_shader_configs_for_attrib_id = attrib_configs_for_attrib_id.map(
+                attrib_config => Object.fromEntries([`attrib${attrib_id}`, attrib_config])
+            );
+            shader_configs = crossCombine(
+                shader_configs,
+                new_shader_configs_for_attrib_id
+            );
+        }
+
+        // -
+
+        debug(`\
+        shader_configs.length: ${shader_configs.length}`);
+        for (const shader_config of shader_configs) {
+            /** @type {AttribConfig[]} */
+            const attribs = Object.values(shader_config);
+
+            for (const i of range(MAX_VERTEX_ATTRIBS)) {
+                gl.vertexAttrib4fv(i, [0,0,0,0]);
+                gl_vertexAttribState(gl, i, INIT_VERTEX_ATTRIB_STATE);
+            }
+
+            // -
+
+            // Init attribs.
+            const glsl_type_by_attrib_id = {};
+            for (const attrib of attribs) {
+                const attrib_id = attrib.attrib_id;
+                glsl_type_by_attrib_id[attrib_id] = attrib.glsl_type;
+
+                const type_prefix = type_prefix_from_glsl_type(attrib.glsl_type);
+                const vaps = VAP_VARIANTS_BY_TYPE_PREFIX.get(type_prefix);
+                const vav = VAV_INFO_BY_PREFIX_TYPE.get(type_prefix);
+
+                 // Any valid VAP is ok for this init pass.
+                const any_valid_vap = vaps[0] || throwv({vaps});
+                const state = {
+                    divisor: 0,
+                    is_array: false,
+                    vap: any_valid_vap,
+                };
+                gl_vertexAttribState(gl, attrib_id, INIT_VERTEX_ATTRIB_STATE);
+
+                vav.gl_vertexAttrib4v.call(gl, attrib_id, vav.data);
+            }
+
+            // -
+
+            await with_prog_for_shader_config(gl, glsl_type_by_attrib_id, async prog => {
+                debug(`\
+                attribs.length: ${attribs.length}`);
+                for (const attrib of attribs) {
+                    const attrib_id = attrib.attrib_id;
+                    prog.u_select_attrib_id(attrib_id);
+
+                    const type_prefix = type_prefix_from_glsl_type(attrib.glsl_type);
+                    const vaps = VAP_VARIANTS_BY_TYPE_PREFIX.get(type_prefix);
+                    const vav = VAV_INFO_BY_PREFIX_TYPE.get(type_prefix);
+
+                    const vap_xor_vav_configs = [].concat(
+                        [{is_array: false, vav}],
+                        vaps.map(vap => ({is_array: true, vap})),
+                    );
+                    const fetch_configs = crossCombine(
+                        DIVISORS.map(divisor => ({divisor})),
+                        vap_xor_vav_configs,
+                        DRAW_CALL_COMBOS
+                    );
+                    debug(`\
+                    fetch_configs.length: ${fetch_configs.length}`);
+                    for (const fetch_config of fetch_configs) {
+                        clearBuffer();
+
+                        gl_vertexAttribState(gl, attrib_id, fetch_config);
+
+                        prog.u_select_instance_id(fetch_config.inst_id);
+                        const vert_count = 1;
+                        const inst_count = fetch_config.inst_id+1;
+                        gl.drawArraysInstanced(GL.POINTS, fetch_config.vert_id, vert_count, inst_count);
+                        const was = readPixel();
+
+                        const expected = jsgl.fetch_attrib(gl, attrib_id,
+                            fetch_config.vert_id, fetch_config.inst_id);
+                        console.assert([1, 2].includes(expected.length), expected);
+
+                        const mins = expected[0];
+                        const maxs = expected[1];
+                        if (!maxs) {
+                            expectArray(was, mins);
+                        } else {
+                            for (const i in was) {
+                                shouldBeTrue(`[${mins}][${i}] <= ${was[i]} && ${was[i]} <= [${maxs}][${i}]`);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    // -
+
+    const FULL_ATTRIB_GLSL_TYPES = [
+        'float',
+        'vec2',
+        'vec3',
+        'vec4',
+        'int',
+        'ivec2',
+        'ivec3',
+        'ivec4',
+        'uint',
+        'uvec2',
+        'uvec3',
+        'uvec4',
+    ];
+
+    const FEWER_ATTRIB_IDS_LIST = [
+        [0],
+        [1],
+        [0,1],
+        [1,2],
+        [0,MAX_VERTEX_ATTRIBS-1],
+        [1,MAX_VERTEX_ATTRIBS-1],
+    ];
+    debug(`\
+    FEWER_ATTRIB_LOCS_LIST.length: ${FEWER_ATTRIB_LOCS_LIST.length}`);
+    for (const attrib_ids of FEWER_ATTRIB_LOCS_LIST) {
+        await test_with(attrib_ids, FEWER_ATTRIB_IDS_LIST);
+    }
+
+    const FEWER_ATTRIB_GLSL_TYPES = FULL_ATTRIB_GLSL_TYPES.filter(x => x.endsWith('4'));
+    const FULL_ATTRIB_IDS = range(MAX_VERTEX_ATTRIBS);
+    await test_with(FULL_ATTRIB_IDS, FEWER_SHADER_ATTRIB_TYPES);
+
+    finishTest();
+});
+
+// -
+
+debug("");
+var successfullyParsed = true;
+
+</script>
+</body>
+</html>

@@ -4,6 +4,8 @@ Use of this source code is governed by an MIT-style license that can be
 found in the LICENSE.txt file.
 */
 
+// Injected by finishTest(), or included directly via script src=.
+
 shouldBeTrue("successfullyParsed");
 _addSpan('<br /><span class="pass">TEST COMPLETE</span>');
 if (_jsTestPreVerboseLogging) {

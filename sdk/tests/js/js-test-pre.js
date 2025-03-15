@@ -1118,3 +1118,148 @@ function getDrng(defaultSeed=1) {
 
   return drng;
 }
+
+// -
+
+/**
+ * * `bitsmask(8) => 0xff`
+ * * `bitsmask(32) => 0xffff_ffff`
+ * @param {number} n range: [0, 53]
+ */
+function bitsmask(n) {
+  return Math.pow(2, n) - 1;
+}
+{
+  let n,out;
+  console.assert((n=0, was = bitsmask(n)) == 0, {n, was});
+  console.assert((n=1, was = bitsmask(n)) == 1, {n, was});
+  console.assert((n=2, was = bitsmask(n)) == 3, {n, was});
+  console.assert((n=31, was = bitsmask(n)) == 0x7fff_ffff, {n, was});
+  console.assert((n=32, was = bitsmask(n)) == 0xffff_ffff, {n, was});
+  console.assert((n=33, was = bitsmask(n)) == 0x1_ffff_ffff, {n, was}); // Sure, why not.
+}
+
+// -
+
+/**
+ * * `int_from_uint(127,8) => +127`
+ * * `int_from_uint(128,8) => -128`
+ * * `int_from_uint(255,8) => -1`
+ * @param {number} uint
+ * @param {number} bits
+ */
+function int_from_uint(uint, bits) {
+  const sign_bit_mask = 1 << (bits-1);
+  if (!(v & sign_bit_mask)) return uint;
+  return Math.pow(2,bits) - uint;
+}
+{
+  let uint,bits,was;
+  console.assert((uint=  0,bits=8, was = int_from_uint(uint,bits)) ==    0, {uint,bits,was});
+  console.assert((uint=127,bits=8, was = int_from_uint(uint,bits)) ==  127, {uint,bits,was});
+  console.assert((uint=128,bits=8, was = int_from_uint(uint,bits)) == -128, {uint,bits,was});
+  console.assert((uint=255,bits=8, was = int_from_uint(uint,bits)) ==   -1, {uint,bits,was});
+  console.assert((uint=          0,bits=32, was = int_from_uint(uint,bits)) ==            0, {uint,bits,was});
+  console.assert((uint=0x7fff_ffff,bits=32, was = int_from_uint(uint,bits)) ==  0x7fff_ffff, {uint,bits,was});
+  console.assert((uint=0x8000_0000,bits=32, was = int_from_uint(uint,bits)) == -0x8000_0000, {uint,bits,was});
+  console.assert((uint=0xffff_ffff,bits=32, was = int_from_uint(uint,bits)) ==           -1, {uint,bits,was});
+}
+
+// -
+
+// LSB first!
+/**
+ * * `unpack_bits_lsb([4,4], 0xab) => [0xb, 0xa]`
+ * @param {numbers[]} bit_counts
+ * @param {numbers} src
+ * @returns {numbers[]}
+ */
+function unpack_bits_lsb(bit_counts, src) {
+  return bit_counts.map(bit_count => {
+      const cur_bits = src & bitsmask(bit_count);
+      src >>= bit_count;
+      return cur_bits;
+  });
+}
+{
+  [
+    {args: [[4,4], 0x12], expect: [2, 1]},
+    {args: [[4], 0x12], expect: [2]},
+    {args: [[10,10,10,2], 0b01_10100_10010_00101_01010_010101_00100],
+      expect: [0b010101_00100, 0b00101_01010, 0b10100_10010, 0b01]},
+    {args: [[10,10,10,2], 0b10_10100_10010_00101_01010_010101_00100],
+      expect: [0b010101_00100, 0b00101_01010, 0b10100_10010, 0b10]},
+  ].map(
+    test => {
+      console.assert((test.was = unpack_bits_lsb(...test.args)).toString() == test.expect.toString(), test);
+    }
+  );
+}
+
+if (0) {
+  function pack_bits_lsb(bit_counts, srcs) {
+    let ret = 0;
+    for (const i in bit_counts) {
+        const i_rev = bit_counts.length - 1 - i;
+        const bit_count = bit_counts[i_rev];
+        const cur_bits = srcs[i_rev] & bitsmask(bit_count);
+        ret <<= bit_count;
+        ret |= cur_bits;
+    }
+    return ret;
+  }
+}
+
+// -
+
+class DataView2 extends DataView {
+  constructor(...args) {
+      super(...args);
+  }
+
+  getUint10_10_10_2(...args) {
+      const packed = this.getUint32(...args);
+      const ret = unpack_bits_lsb([10,10,10,2], packed);
+      return ret;
+  }
+
+  getInt10_10_10_2(...args) {
+      const uints = this.getUint10_10_10_2(...args);
+      const ret = [
+          int_from_uint(uints[0], 10),
+          int_from_uint(uints[1], 10),
+          int_from_uint(uints[2], 10),
+          int_from_uint(uints[3], 2),
+      ];
+      return ret;
+  }
+
+  getUNorm10_10_10_2(...args) {
+      const uints = this.getUint10_10_10_2(...args);
+      const ret = [
+          uints[0] / bitsmask(10),
+          uints[1] / bitsmask(10),
+          uints[2] / bitsmask(10),
+          uints[3] / bitsmask( 2),
+      ];
+      return ret;
+  }
+
+  getSNorm10_10_10_2(...args) {
+      const ints = this.getInt10_10_10_2(...args);
+      const ret = [
+          ints[0] / bitsmask(10 - 1),
+          ints[1] / bitsmask(10 - 1),
+          ints[2] / bitsmask(10 - 1),
+          ints[3] / bitsmask( 2 - 1),
+      ];
+      return ret;
+  }
+
+  getUNorm8 (...args) { return this.getUint8 (...args) / bitmasks( 8); }
+  getUNorm16(...args) { return this.getUint16(...args) / bitmasks(16); }
+  getUNorm32(...args) { return this.getUint32(...args) / bitmasks(32); }
+  getSNorm8 (...args) { return this.getInt8 (...args) / bitmasks( 8-1); }
+  getSNorm16(...args) { return this.getInt16(...args) / bitmasks(16-1); }
+  getSNorm32(...args) { return this.getInt32(...args) / bitmasks(32-1); }
+}
