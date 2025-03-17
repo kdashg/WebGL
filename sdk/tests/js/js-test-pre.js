@@ -1150,8 +1150,8 @@ function bitsmask(n) {
  */
 function int_from_uint(uint, bits) {
   const sign_bit_mask = 1 << (bits-1);
-  if (!(v & sign_bit_mask)) return uint;
-  return Math.pow(2,bits) - uint;
+  if (!(uint & sign_bit_mask)) return uint;
+  return uint - Math.pow(2,bits); // 255 - 256 => -1
 }
 {
   let uint,bits,was;
@@ -1183,12 +1183,14 @@ function unpack_bits_lsb(bit_counts, src) {
 }
 {
   [
-    {args: [[4,4], 0x12], expect: [2, 1]},
-    {args: [[4], 0x12], expect: [2]},
-    {args: [[10,10,10,2], 0b01_10100_10010_00101_01010_010101_00100],
-      expect: [0b010101_00100, 0b00101_01010, 0b10100_10010, 0b01]},
-    {args: [[10,10,10,2], 0b10_10100_10010_00101_01010_010101_00100],
-      expect: [0b010101_00100, 0b00101_01010, 0b10100_10010, 0b10]},
+    {i: 1, args: [[4,4], 0x12], expect: [2, 1]},
+    {i: 2, args: [[4], 0x12], expect: [2]},
+    {i: 3, args: [[10,10,10,2], 0b01_00000_00000_00000_00000_00000_00100],
+      expect: [0b00000_00100, 0b00000_00000, 0b00000_00000, 0b01]},
+    {i: 4, args: [[10,10,10,2], 0b01_10100_10010_00101_01010_01001_00100],
+      expect: [0b01001_00100, 0b00101_01010, 0b10100_10010, 0b01]},
+    {i: 5, args: [[10,10,10,2], 0b10_10100_10010_00101_01010_01001_00100],
+      expect: [0b01001_00100, 0b00101_01010, 0b10100_10010, 0b10]},
   ].map(
     test => {
       console.assert((test.was = unpack_bits_lsb(...test.args)).toString() == test.expect.toString(), test);

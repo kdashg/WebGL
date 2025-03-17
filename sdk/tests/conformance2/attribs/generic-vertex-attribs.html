@@ -11,6 +11,7 @@ found in the LICENSE.txt file.
 <link rel="stylesheet" href="../../resources/js-test-style.css"/>
 <script src="../../js/js-test-pre.js"></script>
 <script src="../../js/webgl-test-utils.js"></script>
+<script src="../../js/jsgl.js"></script>
 </head>
 <body>
 <div id="description"></div>
@@ -429,7 +430,7 @@ call(async () => {
     const DRNG = getDrng();
     const MAX_BUFFER_FETCH_ID = 100_000;
 
-    const gl = (new HTMLCanvasElement()).getContext('webgl2');
+    const gl = document.createElement('canvas').getContext('webgl2');
     const jsgl = new JSGL(gl);
     const MAX_VERTEX_ATTRIBS = gl.getParameter(GL.MAX_VERTEX_ATTRIBS);
 

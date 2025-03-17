@@ -200,6 +200,7 @@ class JSGL {
       UNSIGNED_SHORT: {bytes_per_channel: 2, load: DataView.prototype.getUInt16, load_norm: DataView.prototype.getUNorm16},
       INT: {bytes_per_channel: 4, load: DataView.prototype.getInt32, load_norm: DataView.prototype.getSNorm32},
       UNSIGNED_INT: {bytes_per_channel: 4, load: DataView.prototype.getUInt32, load_norm: DataView.prototype.getUNorm32},
+
       HALF_FLOAT: {bytes_per_channel: 2, load: DataView.prototype.getFloat16},
       FLOAT: {bytes_per_channel: 4, load: DataView.prototype.getFloat32},
 
