@@ -11,6 +11,7 @@ class JSGL {
 
    /**
     * @typedef {Float32Array | Int32Array | Uint32Array} Any32Array
+    * @typedef {Any32Array} Any32Array4
     * @typedef {number} GLenum
     */
 
@@ -50,7 +51,7 @@ class JSGL {
 
          return retval;
       }
-      class_[method_name].name = method_name;
+      Object.defineProperty(class_[method_name], 'name', {value: method_name, writable: false});
       return true;
    }
 
@@ -68,13 +69,22 @@ class JSGL {
    ]);
 
    static get_gl_buffer_by_target(gl, target_pname) {
-      const binding_pname = BINDING_PNAME_BY_TARGET_PNAME.get(target_pname);
+      const binding_pname = this.BINDING_PNAME_BY_TARGET_PNAME.get(target_pname);
       const bound = gl.getParameter(binding_pname);
       return bound;
    }
 
    /** @type {WeakMap<WebGLBuffer, TypedArray>} */
    #cached_data_by_buffer = new WeakMap();
+
+   data_for_buffer(buf) {
+      let data = this.#cached_data_by_buffer.get(buf);
+      console.assert(data);
+      if (!data) {
+         // data = gl.getBufferSubData(...)
+      }
+      return data;
+   }
 
    /**
     * @param {WebGL2RenderingContext} gl
@@ -84,14 +94,14 @@ class JSGL {
 
       const cached_data_by_buffer = this.#cached_data_by_buffer;
 
-      hook_method(gl, 'bufferData', {
+      JSGL.hook_method(gl, 'bufferData', {
          fn_after: function(ret, method_name, target, srcData, usage, srcOffset, length) {
             srcOffset = srcOffset || 0;
             length = length || 0;
 
             if (srcData instanceof DataView || srcData instanceof ArrayBuffer) {
                srcData = abv_cast(Uint8Array, srcData);
-            } else if (typeof(srcData) == number) {
+            } else if (typeof(srcData) == 'number') {
                srcData = new Uint8Array(srcData);
             }
 
@@ -104,13 +114,13 @@ class JSGL {
 
             // -
 
-            const buffer = get_gl_buffer_by_target(this, target);
+            const buffer = JSGL.get_gl_buffer_by_target(this, target);
             srcData = srcData.slice(); // Copy!
             cached_data_by_buffer.set(buffer, srcData);
          },
       });
 
-      hook_method(gl, 'bufferSubData', {
+      JSGL.hook_method(gl, 'bufferSubData', {
          fn_after: function(ret, method_name, target, dstByteOffset, srcData, srcOffset, length) {
             srcOffset = srcOffset || 0;
             length = length || 0;
@@ -135,7 +145,7 @@ class JSGL {
          },
       });
 
-      hook_method(gl, 'copyBufferSubData', {
+      JSGL.hook_method(gl, 'copyBufferSubData', {
          fn_after: function(ret, method_name, readTarget, writeTarget, readOffset, writeOffset, size) {
             const src = get_gl_buffer_by_target(this, readTarget);
             const dst = get_gl_buffer_by_target(this, writeTarget);
@@ -146,7 +156,7 @@ class JSGL {
          },
       });
 
-      hook_method(gl, 'readPixels', {
+      JSGL.hook_method(gl, 'readPixels', {
          fn_after: function() {
             if (!gl.PIXEL_PACK_BUFFER_BINDING) return;
             const buffer = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING);
@@ -159,7 +169,7 @@ class JSGL {
       const BOX = {
          at_risk_of_tf: false,
       };
-      hook_method(gl, 'beginTransformFeedback', {
+      JSGL.hook_method(gl, 'beginTransformFeedback', {
          fn_after: function() {
             BOX.at_risk_of_tf = true;
          },
@@ -173,7 +183,7 @@ class JSGL {
          'drawRangeElements',
       ];
       DRAW_CALLS.map(
-         name => hook_method(gl, name, {
+         name => JSGL.hook_method(gl, name, {
             fn_after: function() {
                if (!BOX.at_risk_of_tf) return;
 
@@ -210,14 +220,14 @@ class JSGL {
    }));
 
    /** @type {Map<GLenum,string>}*/
-   static TYPE_NAME_BY_PNAME = new Map();
-   static {
-      for (const type_name of FETCH_INFO_BY_TYPE_NAME.keys()) {
-         const pname = GL[type_name];
-         console.assert(pname, {GL, typename, FETCH_INFO_BY_TYPE_NAME});
-         type_name_by_pname.set(pname, type_name);
-      }
-   }
+   static TYPE_NAME_BY_PNAME = new Map(
+      this.FETCH_INFO_BY_TYPE_NAME.keys().map(
+         type_name => {
+            const pname = this.GL[type_name] || this.throwv({pname, type_name});
+            return [pname, type_name];
+         }
+      )
+   );
 
    static WEBGL1_GETVERTEXATTRIB_POLYFILL_BY_NAME = new Map([
       ['VERTEX_ATTRIB_ARRAY_DIVISOR', 0],
@@ -232,6 +242,9 @@ class JSGL {
       const name = `VERTEX_ATTRIB_ARRAY${suffix}`;
       const pname = GL[name] || throwv({suffix, name, GL});
       if (!gl[name]) return WEBGL1_GETVERTEXATTRIB_POLYFILL_BY_NAME.get(name);
+      if (name == 'VERTEX_ATTRIB_ARRAY_POINTER') {
+         return gl.getVertexAttribOffset(i, pname);
+      }
       return gl.getVertexAttrib(i, pname);
    }
 
@@ -279,16 +292,16 @@ class JSGL {
             index_buffer: gl.getParameter(GL.ELEMENT_ARRAY_BUFFER_BINDING),
             attribs: range(MAX_VERTEX_ATTRIBS).map(
                   i => ({
-                     is_array     : gl_get_vao_param(gl, i, '_ENABLED'),
-                     divisor      : gl_get_vao_param(gl, i, '_DIVISOR'),
+                     is_array     : this.gl_get_vao_param(gl, i, '_ENABLED'),
+                     divisor      : this.gl_get_vao_param(gl, i, '_DIVISOR'),
                      vap: {
-                        integer   : gl_get_vao_param(gl, i, '_INTEGER'),
-                        size      : gl_get_vao_param(gl, i, '_SIZE'),
-                        type      : TYPE_NAME_BY_PNAME.get(gl_get_vao_param(gl, i, '_TYPE')),
-                        normalized: gl_get_vao_param(gl, i, '_NORMALIZED'),
-                        stride    : gl_get_vao_param(gl, i, '_STRIDE'),
-                        offset    : gl_get_vao_param(gl, i, '_POINTER'),
-                        buffer    : gl_get_vao_param(gl, i, '_BUFFER_BINDING'),
+                        integer   : this.gl_get_vao_param(gl, i, '_INTEGER'),
+                        size      : this.gl_get_vao_param(gl, i, '_SIZE'),
+                        type      : JSGL.TYPE_NAME_BY_PNAME.get(this.gl_get_vao_param(gl, i, '_TYPE')),
+                        normalized: this.gl_get_vao_param(gl, i, '_NORMALIZED'),
+                        stride    : this.gl_get_vao_param(gl, i, '_STRIDE'),
+                        offset    : this.gl_get_vao_param(gl, i, '_POINTER'),
+                        buffer    : this.gl_get_vao_param(gl, i, '_BUFFER_BINDING'),
                      },
                   })
             ),
@@ -303,17 +316,17 @@ class JSGL {
     * @param {number[]} attrib_ids
     * @param {number} vert_id
     * @param {number} inst_id
-    * @returns {number[4][][]}
+    * @returns {Any32Array4[][]}
     */
    fetch_attribs(state_or_gl, attrib_ids, vert_id, inst_id) {
       if (state_or_gl.getVertexAttrib) {
-            state_or_gl = get_fetch_state(state_or_gl);
+            state_or_gl = this.get_gl_fetch_state(state_or_gl);
       }
       /** @type {GlFetchState} */
       const state = state_or_gl;
 
       return attrib_ids.map(
-            attrib_id => jsgl_fetch_attrib(state, attrib_id, vert_id, inst_id)
+            attrib_id => this.fetch_attrib(state, attrib_id, vert_id, inst_id)
       )
    }
 
@@ -324,17 +337,17 @@ class JSGL {
     * @param {number} attrib_id
     * @param {number} vert_id
     * @param {number} inst_id
-    * @returns {number[4][]}
+    * @returns {Any32Array4[]}
     */
    fetch_attrib(state_or_gl, attrib_id, vert_id, inst_id) {
       if (state_or_gl.getVertexAttrib) {
-          state_or_gl = get_fetch_state(state_or_gl);
+          state_or_gl = this.get_gl_fetch_state(state_or_gl);
       }
       /** @type {GlFetchState} */
       const state = state_or_gl;
 
       /** @type {GlVaoPerAttribState} */
-      const attrib = state.vao.attrib[attrib_id];
+      const attrib = state.vao.attribs[attrib_id];
 
       if (!attrib.is_array) {
           const vals = state.generic_attribs[attrib_id];
@@ -349,25 +362,22 @@ class JSGL {
       /** @type {GlVapState} */
       const vap = attrib.vap;
 
-      const buffer_data = vap.buffer.data;
+      const buffer_data = this.data_for_buffer(vap.buffer);
       if (!buffer_data.data_view) {
-         buffer_data.data_view = as_abv(DataView2, buffer_data);
+         buffer_data.data_view = abv_cast(DataView2, buffer_data);
       }
       const data_view = buffer_data.data_view;
 
-      const fetch_info = FETCH_INFO_BY_TYPE[vap.type] || throwv({FETCH_INFO_BY_TYPE, vap});
+      const fetch_info = JSGL.FETCH_INFO_BY_TYPE_NAME.get(vap.type) || throwv({FETCH_INFO_BY_TYPE, vap});
       let fn_DataView_load = fetch_info.load;
-      let convert_to_f32 = false;
+      let fetch_result_ctor = Float32Array;
       let possible_f32_quant_error = vap.type.endsWith('INT'); // SHORT and smaller (and Packed) are exact as f32.
       if (vap.integer) {
          possible_f32_quant_error = false;
+         fetch_result_ctor = vap.type.includes('UNSIGNED') ? Uint32Array : Int32Array;
       } else if (vap.normalized) {
          console.assert(fetch_info.load_norm || vap.type.includes('FLOAT'), {vap, fetch_info});
          fn_DataView_load = fetch_info.load_norm || fn_DataView_load;
-         //convert_to_f32 = true; // number -> f32?
-         //possible_f32_quant_error = true; // Are we safe?
-      } else {
-         convert_to_f32 = !vap.type.includes('FLOAT');
       }
 
       const DATAVIEW_AS_LITTLE_ENDIAN = true;
@@ -380,7 +390,7 @@ class JSGL {
       }
 
       const attrib_byte_offset = vap.offset + fetch_id * byte_stride_per_attrib;
-      const DEFAULT_CHANNEL_VALS = [0,0,0,1];
+      const DEFAULT_CHANNEL_VALS = [0,0,0,1]; // w: 1.0f, 1i, or 1u.
       let load_vals;
       if (!fetch_info.bytes_per_channel) {
           load_vals = fn_load(attrib_byte_offset);
@@ -395,12 +405,13 @@ class JSGL {
       }
 
       let ret = [load_vals];
-      if (convert_to_f32 && !(load_vals instanceof Float32Array)) {
+      console.log({load_vals, fetch_result_ctor});
+      if (!(load_vals instanceof fetch_result_ctor)) {
           console.assert(load_vals.length = 4);
           const f32s = new Float32Array(4*2); // as [...min, ...max]
           const u32s = abv_cast(Uint32Array, f32s);
           let is_exact = true;
-          for (const i in load_vals) {
+          for (const i of range(4)) {
               const exact = load_vals[i];
               f32s[i] = exact;
 
@@ -414,8 +425,8 @@ class JSGL {
                   }
               }
               u32s[4+i] = u32s[i] + min_max_delta;
-              console.assert(f32s[i] <= exact, {failed: 'min <= exact', i, exact, f32s});
-              console.assert(exact <= f32s[4+i], {failed: 'exact <= max', i, exact, f32s});
+              console.assert(f32s[i] <= exact    , {failed: 'min <= exact', i, min: f32s[i  ], exact, f32s});
+              console.assert(exact   <= f32s[4+i], {failed: 'exact <= max', i, exact, max: f32s[4+i], f32s});
           }
           const mins = f32s.subarray(0, 4);
           if (is_exact) {
@@ -425,7 +436,7 @@ class JSGL {
               ret = [mins, maxs];
           }
       }
-
+      console.log({ret});
       return ret;
   }
 }

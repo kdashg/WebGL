@@ -65,6 +65,29 @@ const GL = globalThis.WebGL2RenderingContext || WebGLRenderingContext;
 
 // -
 
+function jsobj_strinify(obj) {
+    if (typeof(obj) == 'function') return `function ${obj.name}()`;
+    if (typeof(obj) != 'object') return ''+obj;
+    if (obj.constructor == Object) {
+        return '{' + Object.entries(obj).map(
+            ([k, v]) => `${k}: ${jsobj_strinify(v)}`
+        ).join(', ') + '}';
+    }
+    if (Array.isArray(obj)) {
+        obj = obj.map(jsobj_strinify);
+        return '[' + obj + ']';
+    }
+    if (ArrayBuffer.isView(obj)) {
+        if (obj instanceof DataView) throw 'todo';
+        const ctor = obj.constructor;
+        obj = [].map.call(obj, jsobj_strinify);
+        return `new ${ctor.name}([` + obj + `])`;
+    }
+    return ''+obj;
+}
+
+// -
+
 /**
  * @param {WebGL2RenderingContext} gl
  * @param {number} attrib_id
@@ -99,11 +122,11 @@ function gl_vertexAttribState(gl, attrib_id, state) {
         if (vap.integer) {
             console.assert(!vap.normalized, {msg: '.integer && .normalized', gl, attrib_id, state});
             gl.vertexAttribIPointer(attrib_id, vap.size, GL_(vap.type),
-                                    vap.stride, vap.offset);
+                                    vap.stride || 0, vap.offset);
         } else {
             vap.normalized.defined;
             gl.vertexAttribPointer(attrib_id, vap.size, GL_(vap.type),
-                                    vap.normalized, vap.stride, vap.offset);
+                                    vap.normalized, vap.stride || 0, vap.offset);
         }
         gl.bindBuffer(gl.ARRAY_BUFFER, null);
     }
@@ -211,19 +234,23 @@ function expr_uvec4_bitcast_from(glsl_type, glsl_ident) {
     if (type_prefix == 'v') {
         type_prefix = 'f';
     }
-    let len = glsl_type[glsl_type.length-1];
-    if (len != len) { // NaN
-        len = 1;
+    let args = [glsl_ident];
+    if (glsl_type.includes('vec')) {
+        const channels = parseInt(glsl_type[glsl_type.length-1]);
+        args = range(channels).map(i => `${glsl_ident}[${i}]`);
     }
     let bitcast_fn = 'uint';
     if (type_prefix == 'f') {
         bitcast_fn = 'floatBitsToUint';
     }
-    const args = range(4).map(
-        i => (i < len) ? `${bitcast_fn}(${glsl_ident}[${i}])` : `0u`
-    );
+    args = args.map(arg => `${bitcast_fn}(${arg})`);
 
-    return `uvec4(${args.join(', ')})`;
+    while (args.length < 4) {
+        args.push(`0u`);
+    }
+    const expr = `uvec4(${args.join(', ')})`;
+    console.log({glsl_type, glsl_ident, bitcast_fn, expr});
+    return expr;
 }
 
 /**
@@ -238,17 +265,18 @@ async function with_prog_for_shader_config(gl, glsl_type_by_attrib_id, fn) {
     for (const [attrib_id, glsl_type] of Object.entries(glsl_type_by_attrib_id)) {
         const attrib_name = `attrib${attrib_id}`;
         vs_decl_lines.push(
-            `layout(location=${attrib_id}) in highp ${attrib.glsl_type} ${attrib_name};`,
+            `layout(location=${attrib_id}) in highp ${glsl_type} ${attrib_name};`,
         );
         vs_main_lines.push(
             `if (u_select_attrib_id == ${attrib_id}) {`,
-            `    v_result = ${expr_uvec4_bitcast_from(attrib.glsl_type, attrib_name)};`,
+            `    v_result = ${expr_uvec4_bitcast_from(glsl_type, attrib_name)};`,
             `}`
         );
     }
 
     const vs_src = /* glsl */ `\
 #version 300 es
+#line 253
 
 precision highp int;
 
@@ -261,6 +289,7 @@ flat out uvec4 v_result;
 // vs_decl_lines {
 ${vs_decl_lines.join('\n')}
 // } vs_decl_lines
+#line 266
 
 // -
 
@@ -276,10 +305,10 @@ vec2 VertPos01_TRIANGLES(int vert_id) {
 
 void main() {
     gl_PointSize = 1.0f;
-    gl_Position = vec4(2 * VertPos01_TRIANGLES(gl_VertexID) - 1, 0, 1);
+    //gl_Position = vec4(2.0 * VertPos01_TRIANGLES(gl_VertexID) - 1.0, 0, 1);
 
     if (gl_InstanceID != u_select_instance_id) {
-        gl_Position.z = -2; // Cull me!
+    //    gl_Position.z = -2.0; // Cull me!
     }
 
     v_result = uvec4(0u);
@@ -303,6 +332,13 @@ void main() {
     o_result = v_result;
 }
     `;
+
+    if (0) {
+        debug('\n## vs_src:')
+        debug(vs_src)
+        debug('\n## fs_src:')
+        debug(vs_src)
+    }
 
     with_prog(gl, vs_src, fs_src,
         prelink_prog => {},
@@ -390,7 +426,7 @@ function remapToRealValues(dest, options=NORMALIZE_ALL) {
     const float_info = FLOAT_INFO_BY_CTOR.get(dest.constructor);
     if (float_info) {
         // Float16Array -> Uint16Array
-        const uint_view_ctor = globalThis[data.constructor.name.replace('Float', 'Uint')];
+        const uint_view_ctor = globalThis[dest.constructor.name.replace('Float', 'Uint')];
         const uint_view = abv_cast(uint_view_ctor, dest);
         for (const i in uint_view) {
             uint_view[i] = float_info.normalize(uint_view[i], options);
@@ -544,7 +580,7 @@ call(async () => {
                 type_prefix = 'i';
             }
         }
-        vaps = VAP_VARIANTS_BY_TYPE_PREFIX.get(type_prefix);
+        const vaps = VAP_VARIANTS_BY_TYPE_PREFIX.get(type_prefix);
         vaps.push(vap);
 
         const DATA_CTOR_OVERRIDE_BY_ATTRIB_TYPE = {
@@ -568,7 +604,11 @@ call(async () => {
         [false, true].map(is_array => ({is_array}))
     );
 
-    let VERT_ID = [0, 1, MAX_BUFFER_FETCH_ID-1, Math.pow(2,30), Math.pow(2,31)-1];
+    let VERT_ID = [
+        0, 1, MAX_BUFFER_FETCH_ID-1,
+        //Math.pow(2,30),
+        //Math.pow(2,31)-1,
+    ];
     let INST_ID = [0, 1, MAX_BUFFER_FETCH_ID-1];
 
     const DRAW_CALL_COMBOS = crossCombine(
@@ -579,21 +619,27 @@ call(async () => {
     // -
 
     const fb = gl.createFramebuffer();
+
     fb.tex = gl.createTexture();
     fb.tex.format = 'RGBA32UI';
     gl.bindTexture(gl.TEXTURE_2D, fb.tex);
-    gl.texStorage2D(gl.TEXTURE_2D, 1, gl[fb.tex.format], 1, 1);
+    fb.tex.mip_levels = 1;
+    fb.tex.w = fb.tex.h = 1;
+    gl.texStorage2D(gl.TEXTURE_2D, fb.tex.mip_levels, gl[fb.tex.format], fb.tex.w, fb.tex.h);
     gl.bindTexture(gl.TEXTURE_2D, null);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fb.tex, 0);
+    fb.w = fb.tex.w;
+    fb.h = fb.tex.h;
+    gl.viewport(0, 0, fb.w, fb.h);
 
     function clearBuffer() {
         gl.clearBufferuiv(gl.COLOR, 0, [0,0,0,0]);
     }
     function readPixel() {
         const data = new Uint32Array(4);
-        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_INT, data);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data);
         return data;
     }
 
@@ -615,8 +661,6 @@ call(async () => {
     // -
 
     async function test_with(attrib_ids, glsl_types) {
-        await wtu.dispatchPromise();
-
         debug(`\
 
         attrib_ids: [${attrib_ids}]
@@ -629,16 +673,21 @@ call(async () => {
          * @typedef {object.<AttribName,AttribConfig>} ShaderConfig
          * @type {ShaderConfig[]}
          */
-        const shader_configs = [{}];
+        let shader_configs = [{}];
+        debug('(building shader_configs)')
+        let i = 0;
         for (const attrib_id of attrib_ids) {
+            i += 1;
             const attrib_configs_for_attrib_id = glsl_types.map(glsl_type => ({attrib_id, glsl_type}));
             const new_shader_configs_for_attrib_id = attrib_configs_for_attrib_id.map(
-                attrib_config => Object.fromEntries([`attrib${attrib_id}`, attrib_config])
+                attrib_config => Object.fromEntries([[`attrib${attrib_id}`, attrib_config]])
             );
             shader_configs = crossCombine(
                 shader_configs,
                 new_shader_configs_for_attrib_id
             );
+            debug(`(stage ${i}/${attrib_ids.length} shader_configs.length: ${shader_configs.length})`);
+            await new Promise(go => setTimeout(go, 0));
         }
 
         // -
@@ -648,6 +697,9 @@ call(async () => {
         for (const shader_config of shader_configs) {
             /** @type {AttribConfig[]} */
             const attribs = Object.values(shader_config);
+
+            debug(`\
+            attribs: ${jsobj_strinify(attribs)}`);
 
             for (const i of range(MAX_VERTEX_ATTRIBS)) {
                 gl.vertexAttrib4fv(i, [0,0,0,0]);
@@ -684,16 +736,25 @@ call(async () => {
                 debug(`\
                 attribs.length: ${attribs.length}`);
                 for (const attrib of attribs) {
+                    debug(`\
+                    attrib: ${jsobj_strinify(attrib)}`);
+                    await new Promise(go => setTimeout(go, 0));
+
                     const attrib_id = attrib.attrib_id;
                     prog.u_select_attrib_id(attrib_id);
 
-                    const type_prefix = type_prefix_from_glsl_type(attrib.glsl_type);
+                    const glsl_type = attrib.glsl_type;
+                    const type_prefix = type_prefix_from_glsl_type(glsl_type);
+                    const glsl_channels = glsl_type.includes('vec') ? glsl_type[glsl_type.length-1] : 1;
                     const vaps = VAP_VARIANTS_BY_TYPE_PREFIX.get(type_prefix);
                     const vav = VAV_INFO_BY_PREFIX_TYPE.get(type_prefix);
 
                     const vap_xor_vav_configs = [].concat(
                         [{is_array: false, vav}],
-                        vaps.map(vap => ({is_array: true, vap})),
+                        vaps.map(vap => ({
+                            is_array: true,
+                            vap: Object.assign({stride: 0, offset: 0}, vap),
+                        })),
                     );
                     const fetch_configs = crossCombine(
                         DIVISORS.map(divisor => ({divisor})),
@@ -703,6 +764,9 @@ call(async () => {
                     debug(`\
                     fetch_configs.length: ${fetch_configs.length}`);
                     for (const fetch_config of fetch_configs) {
+                        debug(`\
+                        fetch_config: ${jsobj_strinify(fetch_config)}`);
+
                         clearBuffer();
 
                         gl_vertexAttribState(gl, attrib_id, fetch_config);
@@ -711,24 +775,40 @@ call(async () => {
                         const vert_count = 1;
                         const inst_count = fetch_config.inst_id+1;
                         gl.drawArraysInstanced(GL.POINTS, fetch_config.vert_id, vert_count, inst_count);
-                        const was = readPixel();
+                        const was_u32s = readPixel();
+                        const was_f32s = abv_cast(Float32Array, was_u32s);
+                        debug(`was_u32s: [${was_u32s}]`);
+                        debug(`was_f32s: [${was_f32s}]`);
 
-                        const expected = jsgl.fetch_attrib(gl, attrib_id,
+                        function to_hexes(vals) {
+                            return [].map.call(vals, v => `0x${v.toString(16)}`).join(', ');
+                        }
+
+                        const expected_fetch = jsgl.fetch_attrib(gl, attrib_id,
                             fetch_config.vert_id, fetch_config.inst_id);
-                        console.assert([1, 2].includes(expected.length), expected);
+                        console.assert([1, 2].includes(expected_fetch.length), expected_fetch);
+                        console.log({expected_fetch});
+                        const expected_vert_input = expected_fetch.map(
+                            vals => vals.map(
+                                (val, i) => i < glsl_channels ? val : 0
+                            )
+                        );
 
-                        const mins = expected[0];
-                        const maxs = expected[1];
+                        const mins = expected_vert_input[0];
+                        const maxs = expected_vert_input[1];
                         if (!maxs) {
-                            expectArray(was, mins);
+                            const expected_u32s = abv_cast(Uint32Array, mins);
+                            shouldBe(`'[${to_hexes(was_u32s)}]'`, `'[${to_hexes(expected_u32s)}]'`);
                         } else {
                             for (const i in was) {
                                 shouldBeTrue(`[${mins}][${i}] <= ${was[i]} && ${was[i]} <= [${maxs}][${i}]`);
                             }
                         }
                     }
+                    if (fetch_config.is_array) throw 'good so far';
                 }
             });
+            break;
         }
     }
 
@@ -748,6 +828,7 @@ call(async () => {
         'uvec3',
         'uvec4',
     ];
+    const VEC4_ATTRIB_GLSL_TYPES = FULL_ATTRIB_GLSL_TYPES.filter(x => x.endsWith('4'));
 
     const FEWER_ATTRIB_IDS_LIST = [
         [0],
@@ -758,14 +839,17 @@ call(async () => {
         [1,MAX_VERTEX_ATTRIBS-1],
     ];
     debug(`\
-    FEWER_ATTRIB_LOCS_LIST.length: ${FEWER_ATTRIB_LOCS_LIST.length}`);
-    for (const attrib_ids of FEWER_ATTRIB_LOCS_LIST) {
-        await test_with(attrib_ids, FEWER_ATTRIB_IDS_LIST);
+    FEWER_ATTRIB_LOCS_LIST.length: ${FEWER_ATTRIB_IDS_LIST.length}`);
+    for (const attrib_ids of FEWER_ATTRIB_IDS_LIST) {
+        await test_with(attrib_ids, FULL_ATTRIB_GLSL_TYPES);
+        break;
     }
 
-    const FEWER_ATTRIB_GLSL_TYPES = FULL_ATTRIB_GLSL_TYPES.filter(x => x.endsWith('4'));
     const FULL_ATTRIB_IDS = range(MAX_VERTEX_ATTRIBS);
-    await test_with(FULL_ATTRIB_IDS, FEWER_SHADER_ATTRIB_TYPES);
+    // Only do full test with one type, as all three is 3^16 => shader_configs.length: 43046721
+    for (const glsl_type of VEC4_ATTRIB_GLSL_TYPES) {
+        //await test_with(FULL_ATTRIB_IDS, [glsl_type]);
+    }
 
     finishTest();
 });

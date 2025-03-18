@@ -606,6 +606,8 @@ function expectTrue(v, msg) {
 }
 
 function maxArrayDiff(a, b) {
+    if (a.length === undefined) throwv({a, b});
+    if (b.length === undefined) throwv({a, b});
     if (a.length != b.length)
         throw new Error(`a and b have different lengths: ${a.length} vs ${b.length}`);
 
