@@ -403,14 +403,14 @@ class JSGL {
                if (i >= num_channels) return DEFAULT_CHANNEL_VALS[i];
                const channel_byte_offset = attrib_byte_offset + i*fetch_info.bytes_per_channel;
                const load_val = fn_load(channel_byte_offset);
-               console.log({i, num_channels, data_view, channel_byte_offset, load_val});
+               //console.log({i, num_channels, data_view, channel_byte_offset, load_val});
                return load_val;
             }
          );
       }
 
       let ret = [load_vals];
-      console.log({load_vals, fetch_result_ctor});
+      //console.log({load_vals, fetch_result_ctor});
       if (!(load_vals instanceof fetch_result_ctor)) {
          console.assert(load_vals.length = 4);
          const f32s = new Float32Array(4*2); // as [...min, ...max]
@@ -420,22 +420,26 @@ class JSGL {
             const exact = load_vals[i];
             f32s[i] = exact;
 
-            let min_max_delta = 0; // max - min
-            if (f32s[i] != exact) {
+            let min_max_delta = 0;
+            if (f32s[i] == exact) {
+               f32s[4+i] = f32s[i];
+            } else {
                is_exact = false;
-               min_max_delta = Math.sign(exact); // -1 or +1
+               min_max_delta = (f32s[i] <= exact) ? +1 : -1;
+               if (f32s[i] < 0.0) {
+                  min_max_delta *= -1;
+               }
+               u32s[i+4] = u32s[i] + min_max_delta;
 
-               if (f32s[i] > exact) {
-                     min_max_delta = -min_max_delta;
+               if (f32s[i] > f32s[4+i]) {
+                  [f32s[i], f32s[4+i]] = [f32s[4+i], f32s[i]];
                }
             }
-            u32s[4+i] = u32s[i] + min_max_delta;
+            if (f32s[i] > f32s[4+i]) throw {i, fetch_info, vap, byte_stride_per_attrib, data_view, attrib_byte_offset, f32s, u32s, exact, is_exact};
             console.assert(f32s[i] <= exact    , {failed: 'min <= exact', i, min: f32s[i  ], exact, f32s});
             console.assert(exact   <= f32s[4+i], {failed: 'exact <= max', i, exact, max: f32s[4+i], f32s});
-            if (f32s[i] > f32s[4+i]) throw {fetch_info, vap, byte_stride_per_attrib, data_view, attrib_byte_offset, f32s, u32s, exact, min_max_delta, is_exact};
             const ok = (f32s[i] <= exact && exact <= f32s[4+i]);
-            if (!ok) throw {fetch_info, vap, byte_stride_per_attrib, data_view, attrib_byte_offset, f32s, u32s, exact, min_max_delta, is_exact};
-            console.assert(ok, {fetch_info, f32s, u32s, exact, min_max_delta, is_exact});
+            if (!ok) throw {msg: 'Failed anyway.', i, fetch_info, vap, byte_stride_per_attrib, data_view, attrib_byte_offset, f32s, u32s, exact, is_exact};
          }
          const mins = f32s.subarray(0, 4);
          if (is_exact) {
@@ -445,7 +449,7 @@ class JSGL {
             ret = [mins, maxs];
          }
       }
-      console.log({ret});
+      //console.log({ret});
       return ret;
   }
 }

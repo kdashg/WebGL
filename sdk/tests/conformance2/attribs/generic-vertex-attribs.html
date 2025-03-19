@@ -15,7 +15,8 @@ found in the LICENSE.txt file.
 </head>
 <body>
 <div id="description"></div>
-<div id="console"></div>
+<br><pre id=e_status></pre>
+<br><div id="console"></div>
 
 <script>
 "use strict";
@@ -309,10 +310,11 @@ vec2 VertPos01_TRIANGLES(int vert_id) {
 
 void main() {
     gl_PointSize = 1.0f;
-    //gl_Position = vec4(2.0 * VertPos01_TRIANGLES(gl_VertexID) - 1.0, 0, 1);
+    gl_Position = vec4(2.0 * VertPos01_TRIANGLES(gl_VertexID) - 1.0, 0, 1);
+    gl_Position.xy *= 0.9;
 
     if (gl_InstanceID != u_select_instance_id) {
-    //    gl_Position.z = -2.0; // Cull me!
+        gl_Position.x = 10.0; // Cull me!
     }
 
     v_result = uvec4(0u);
@@ -321,6 +323,8 @@ void main() {
     // vs_main_lines {
     ${vs_main_lines.join('\n    ')}
     // } vs_main_lines
+
+    //v_result.a = uint(u_select_instance_id);
 }
     `;
 
@@ -445,16 +449,12 @@ function remapToRealValues(dest, options=NORMALIZE_ALL) {
         // Float16Array -> Uint16Array
         const uint_view_ctor = globalThis[dest.constructor.name.replace('Float', 'Uint')];
         const uint_view = abv_cast(uint_view_ctor, dest);
-        console.error({dest, options, float_info, uint_view});
         for (const i of range(uint_view.length)) {
             const was = uint_view[i];
             const now = float_info.normalize(was, options);
             const now2 = float_info.normalize(now, options);
             if (now != now2) throw {was, now, now2};
             uint_view[i] = now;
-            if (now != was) {
-                //console.log({i, was, now, now2: uint_view[i]});
-            }
         }
     }
     return dest;
@@ -487,11 +487,18 @@ console.assert('u' == type_prefix_from_glsl_type('uvec4'));
 
 // -
 
+function to_hexes(vals) {
+    return [].map.call(vals, v => `0x${v.toString(16)}`).join(', ');
+}
+
+// -
+
 call(async () => {
     const DRNG = getDrng();
     const MAX_BUFFER_FETCH_ID = 100_000;
 
     const gl = document.createElement('canvas').getContext('webgl2');
+    globalThis._gl = gl;
     const jsgl = new JSGL(gl);
     const MAX_VERTEX_ATTRIBS = gl.getParameter(GL.MAX_VERTEX_ATTRIBS);
 
@@ -660,13 +667,17 @@ call(async () => {
     fb.h = fb.tex.h;
     gl.viewport(0, 0, fb.w, fb.h);
 
+    let PBO = null;
+    if (gl.PIXEL_PACK_BUFFER) {
+        PBO = gl_createBufferData(gl, gl.PIXEL_PACK_BUFFER, 1_000_000, 'STREAM_READ');
+    }
+
     function clearBuffer() {
         gl.clearBufferuiv(gl.COLOR, 0, [0,0,0,0]);
     }
-    function readPixel() {
-        const data = new Uint32Array(4);
-        gl.readPixels(0, 0, 1, 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data);
-        return data;
+    function readPixel(dest) {
+        //console.log('readPixels', {dest});
+        gl.readPixels(0, 0, 1, 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, dest);
     }
 
     const FAKE_NULL_BUFFER = gl_createBufferData(gl, 'ARRAY_BUFFER', 1);
@@ -790,28 +801,52 @@ call(async () => {
                     debug(`\
                     fetch_configs.length: ${fetch_configs.length}`);
                     let fetch_config_i = -1;
-                    for (const fetch_config of fetch_configs) {
-                        await new Promise(go => setTimeout(go, 0));
-                        fetch_config_i += 1;
-                        debug(`
-                        fetch_config ${fetch_config_i+1}/${fetch_configs.length}: ${jsobj_strinify(fetch_config)}`);
+                    const results = new Array(fetch_configs.length);
+                    const bytes_per_pixel = 4 * Uint32Array.BYTES_PER_ELEMENT;
+                    const cpu_read_pixels_data_size = bytes_per_pixel * fetch_configs.length;
+                    let cpu_read_pixels_data = null;
+                    if (!PBO) {
+                        cpu_read_pixels_data = new Uint8Array(cpu_read_pixels_data_size);
+                    }
+                    let cached_gl_fetch_state = null;
+                    if (1) {
+                        cached_gl_fetch_state = jsgl.get_gl_fetch_state(gl);
+                    }
+                    const fetch_configs_begin = performance.now();
+                    let next_await = fetch_configs_begin + 200;
+                    for (const [i,fetch_config] of Object.entries(fetch_configs)) {
+                        const now = performance.now();
+                        if (next_await <= now || i % 100 == 0) {
+                            next_await = now + 200;
+                            await new Promise(go => setTimeout(go, 0));
+                        }
+
+                        const status = `fetch_config ${+i+1}/${fetch_configs.length}`;
+                        e_status.textContent = status;
+                        //debug(`
+                        //${status}: ${jsobj_strinify(fetch_config)}`);
 
                         clearBuffer();
 
                         gl_vertexAttribState(gl, attrib_id, fetch_config);
+                        if (cached_gl_fetch_state) {
+                            cached_gl_fetch_state.vao.attribs[attrib_id] = fetch_config;
+                        }
 
                         prog.u_select_instance_id(fetch_config.inst_id);
                         const vert_count = 1;
                         const inst_count = fetch_config.inst_id+1;
                         gl.drawArraysInstanced(GL.POINTS, fetch_config.vert_id, vert_count, inst_count);
-                        const was_u32s = readPixel();
-                        const was_f32s = abv_cast(Float32Array, was_u32s);
 
-                        function to_hexes(vals) {
-                            return [].map.call(vals, v => `0x${v.toString(16)}`).join(', ');
+                        let dest = bytes_per_pixel * i;
+                        if (cpu_read_pixels_data) {
+                            dest = cpu_read_pixels_data.subarray(dest, dest + bytes_per_pixel);
+                            dest = abv_cast(Uint32Array, dest);
                         }
 
-                        const expected_fetch = jsgl.fetch_attrib(gl, attrib_id,
+                        readPixel(dest);
+
+                        const expected_fetch = jsgl.fetch_attrib(cached_gl_fetch_state || gl, attrib_id,
                             fetch_config.vert_id, fetch_config.inst_id);
                         console.assert([1, 2].includes(expected_fetch.length), expected_fetch);
                         //console.log({expected_fetch});
@@ -821,6 +856,30 @@ call(async () => {
                             )
                         );
 
+                        results[i] = {
+                            expected_vert_input,
+                        };
+                    }
+                    await new Promise(go => setTimeout(go, 0));
+
+                    if (!cpu_read_pixels_data) {
+                        cpu_read_pixels_data = new Uint8Array(cpu_read_pixels_data_size);
+                        gl.getBufferSubData(GL.PIXEL_PACK_BUFFER, 0, cpu_read_pixels_data);
+                    }
+                    const cpu_read_pixels_u32s = abv_cast(Uint32Array, cpu_read_pixels_data);
+
+                    const fetch_configs_ms = performance.now() - fetch_configs_begin;
+                    const fcps = fetch_configs.length / (fetch_configs_ms / 1000);
+                    debug(`(${fetch_configs.length} fetch_configs / ${fetch_configs_ms}ms => ${fcps} fcps)`);
+
+                    const err = gl.getError();
+                    if (err) throw {err};
+
+                    for (const [i,fetch_config] of Object.entries(fetch_configs)) {
+                        const was_u32s = cpu_read_pixels_u32s.subarray(4*i, 4*i+4);
+                        const was_f32s = abv_cast(Float32Array, was_u32s);
+
+                        const expected_vert_input = results[i].expected_vert_input;
                         const mins = expected_vert_input[0];
                         const maxs = expected_vert_input[1];
                         const was = abv_cast(expected_vert_input[0].constructor, was_u32s);
@@ -842,13 +901,12 @@ call(async () => {
                                 debug(`maxs: u32s: [${abv_cast(Uint32Array, maxs)}], f32s: [${abv_cast(Float32Array, maxs)}]`);
                             }
                         }
-                    }
-                    throw 'good so far';
-                }
-            });
-            break;
-        }
-    }
+                    } // fetch_configs
+                } // attribs
+                //throw 'good so far';
+            }); // with_prog_for_shader_config
+        } // shader_configs
+    } // test_with
 
     // -
 
@@ -879,14 +937,15 @@ call(async () => {
     debug(`\
     FEWER_ATTRIB_LOCS_LIST.length: ${FEWER_ATTRIB_IDS_LIST.length}`);
     for (const attrib_ids of FEWER_ATTRIB_IDS_LIST) {
+        break;
         await test_with(attrib_ids, FULL_ATTRIB_GLSL_TYPES);
         break;
     }
 
-    const FULL_ATTRIB_IDS = range(MAX_VERTEX_ATTRIBS);
+    const FULL_ATTRIB_IDS = range(MAX_VERTEX_ATTRIBS-2); // MAX-2 because of gl_VertexID and gl_InstanceID use.
     // Only do full test with one type, as all three is 3^16 => shader_configs.length: 43046721
     for (const glsl_type of VEC4_ATTRIB_GLSL_TYPES) {
-        //await test_with(FULL_ATTRIB_IDS, [glsl_type]);
+        await test_with(FULL_ATTRIB_IDS, [glsl_type]);
     }
 
     finishTest();
