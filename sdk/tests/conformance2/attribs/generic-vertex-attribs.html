@@ -66,7 +66,7 @@ const GL = globalThis.WebGL2RenderingContext || WebGLRenderingContext;
 // -
 
 function jsobj_strinify(obj) {
-    if (typeof(obj) == 'function') return `function ${obj.name}()`;
+    if (typeof(obj) == 'function') return `[function ${obj.name}]`;
     if (typeof(obj) != 'object') return ''+obj;
     if (obj.constructor == Object) {
         return '{' + Object.entries(obj).map(
@@ -83,7 +83,11 @@ function jsobj_strinify(obj) {
         obj = [].map.call(obj, jsobj_strinify);
         return `new ${ctor.name}([` + obj + `])`;
     }
-    return ''+obj;
+    let ret = ''+obj;
+    if (obj.label) {
+        ret = ret.replace(']', ` "${obj.label}"]`);
+    }
+    return ret;
 }
 
 // -
@@ -249,7 +253,7 @@ function expr_uvec4_bitcast_from(glsl_type, glsl_ident) {
         args.push(`0u`);
     }
     const expr = `uvec4(${args.join(', ')})`;
-    console.log({glsl_type, glsl_ident, bitcast_fn, expr});
+    //console.log({glsl_type, glsl_ident, bitcast_fn, expr});
     return expr;
 }
 
@@ -340,8 +344,8 @@ void main() {
         debug(vs_src)
     }
 
-    with_prog(gl, vs_src, fs_src,
-        prelink_prog => {},
+    return await with_prog(gl, vs_src, fs_src,
+        async prelink_prog => {},
         async prog => {
             gl.useProgram(prog);
             prog.u_select_instance_id = x => gl.uniform1i(gl.getUniformLocation(prog, 'u_select_instance_id'), x);
@@ -383,23 +387,36 @@ function make_float_info(s_bits, e_bits, m_bits) {
         E_INF_NAN,
         M_DIV,
 
+        split: (v) => {
+            const ret = {s: 0, e: 0, m: 0, raw_e: 0, raw_m: 0};
+            ret.raw_m = v & bitsmask(m_bits);
+            v >>= m_bits;
+            ret.raw_e = v & bitsmask(e_bits);
+            v >>= e_bits;
+            ret.s = v & bitsmask(s_bits);
+
+            ret.e = ret.raw_e - E_BIAS;
+            ret.m = 1 + (ret.raw_m / M_DIV);
+            return ret;
+        },
+
         /** @type {(packed:number,options=NORMALIZE_ALL) => number} */
         normalize: (packed, options=NORMALIZE_ALL) =>  {
-            if (options.denorms && packed & E_MASK == 0) {
-                packed ^= packed & M_MASK;
+            if (options.denorms && (packed & E_MASK) == 0) {
+                // Flush to zero.
+                packed &= S_MASK;
+            }
+            if ((packed & E_MASK) == E_MASK) {
+                if (options.infs && (packed & M_MASK) == 0) {
+                    packed ^= 1 << m_bits;
+                    packed |= M_MASK;
+                    //packed ^= bitsmask(1+m_bits);
+                } else if (options.nans && (packed & M_MASK) != 0) {
+                    packed ^= 1 << m_bits;
+                }
             }
             if (options.neg_zero && packed == S_MASK) {
                 packed = 0;
-            }
-            if (packed & E_MASK == E_MASK) {
-                if (options.infs && packed & M_MASK == 0) {
-                    //packed ^= 1 << m_bits;
-                    //packed |= M_MASK;
-                    packed ^= bitsmask(1+mbits);
-                }
-                if (options.nans && packed & M_MASK != 0) {
-                    packed ^= 1 << m_bits;
-                }
             }
             return packed;
         },
@@ -428,8 +445,16 @@ function remapToRealValues(dest, options=NORMALIZE_ALL) {
         // Float16Array -> Uint16Array
         const uint_view_ctor = globalThis[dest.constructor.name.replace('Float', 'Uint')];
         const uint_view = abv_cast(uint_view_ctor, dest);
-        for (const i in uint_view) {
-            uint_view[i] = float_info.normalize(uint_view[i], options);
+        console.error({dest, options, float_info, uint_view});
+        for (const i of range(uint_view.length)) {
+            const was = uint_view[i];
+            const now = float_info.normalize(was, options);
+            const now2 = float_info.normalize(now, options);
+            if (now != now2) throw {was, now, now2};
+            uint_view[i] = now;
+            if (now != was) {
+                //console.log({i, was, now, now2: uint_view[i]});
+            }
         }
     }
     return dest;
@@ -483,6 +508,7 @@ call(async () => {
             remapToRealValues(data);
 
             const buffer = gl_createBufferData(gl, 'ARRAY_BUFFER', data);
+            buffer.label = ctor.name;
             return [ctor, buffer];
         })
     );
@@ -763,9 +789,12 @@ call(async () => {
                     );
                     debug(`\
                     fetch_configs.length: ${fetch_configs.length}`);
+                    let fetch_config_i = -1;
                     for (const fetch_config of fetch_configs) {
-                        debug(`\
-                        fetch_config: ${jsobj_strinify(fetch_config)}`);
+                        await new Promise(go => setTimeout(go, 0));
+                        fetch_config_i += 1;
+                        debug(`
+                        fetch_config ${fetch_config_i+1}/${fetch_configs.length}: ${jsobj_strinify(fetch_config)}`);
 
                         clearBuffer();
 
@@ -777,8 +806,6 @@ call(async () => {
                         gl.drawArraysInstanced(GL.POINTS, fetch_config.vert_id, vert_count, inst_count);
                         const was_u32s = readPixel();
                         const was_f32s = abv_cast(Float32Array, was_u32s);
-                        debug(`was_u32s: [${was_u32s}]`);
-                        debug(`was_f32s: [${was_f32s}]`);
 
                         function to_hexes(vals) {
                             return [].map.call(vals, v => `0x${v.toString(16)}`).join(', ');
@@ -787,7 +814,7 @@ call(async () => {
                         const expected_fetch = jsgl.fetch_attrib(gl, attrib_id,
                             fetch_config.vert_id, fetch_config.inst_id);
                         console.assert([1, 2].includes(expected_fetch.length), expected_fetch);
-                        console.log({expected_fetch});
+                        //console.log({expected_fetch});
                         const expected_vert_input = expected_fetch.map(
                             vals => vals.map(
                                 (val, i) => i < glsl_channels ? val : 0
@@ -796,16 +823,27 @@ call(async () => {
 
                         const mins = expected_vert_input[0];
                         const maxs = expected_vert_input[1];
+                        const was = abv_cast(expected_vert_input[0].constructor, was_u32s);
                         if (!maxs) {
-                            const expected_u32s = abv_cast(Uint32Array, mins);
-                            shouldBe(`'[${to_hexes(was_u32s)}]'`, `'[${to_hexes(expected_u32s)}]'`);
+                            const exact_u32s = abv_cast(Uint32Array, mins);
+                            let ok = shouldBe(`'[${to_hexes(was_u32s)}]'`, `'[${to_hexes(exact_u32s)}]'`);
+                            if (!ok) {
+                                debug(`was: u32s: [${was_u32s}], f32s: [${was_f32s}]`);
+                                debug(`exact: u32s: [${exact_u32s}], f32s: [${abv_cast(Float32Array, exact_u32s)}]`);
+                            }
                         } else {
-                            for (const i in was) {
-                                shouldBeTrue(`[${mins}][${i}] <= ${was[i]} && ${was[i]} <= [${maxs}][${i}]`);
+                            let ok = false;
+                            for (const i of range(4)) {
+                                ok &= shouldBeTrue(`[${mins}][${i}] <= ${was[i]} && ${was[i]} <= [${maxs}][${i}]`);
+                            }
+                            if (!ok) {
+                                debug(`mins: u32s: [${abv_cast(Uint32Array, mins)}], f32s: [${abv_cast(Float32Array, mins)}]`);
+                                debug(`was: u32s: [${was_u32s}], f32s: [${was_f32s}]`);
+                                debug(`maxs: u32s: [${abv_cast(Uint32Array, maxs)}], f32s: [${abv_cast(Float32Array, maxs)}]`);
                             }
                         }
                     }
-                    if (fetch_config.is_array) throw 'good so far';
+                    throw 'good so far';
                 }
             });
             break;

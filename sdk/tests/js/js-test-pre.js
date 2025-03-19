@@ -232,6 +232,7 @@ function testPassed(msg) {
     if (_jsTestPreVerboseLogging) {
         _bufferedLogToConsole('PASS ' + msg);
     }
+    return true;
 }
 
 /**
@@ -246,6 +247,7 @@ function testFailed(msg) {
     _addSpan('<span><span class="fail">FAIL</span> ' + escapeHTML(msg) + '</span>');
     _bufferedLogToConsole('FAIL ' + msg);
     _flushBufferedLogsToConsole();
+    return false;
 }
 
 var _currentTestName;
@@ -381,9 +383,9 @@ function shouldBeString(evalable, expected) {
     const val = eval(evalable);
     const text = evalable + " should be " + expected + ".";
     if (val == expected) {
-        testPassed(text);
+        return testPassed(text);
     } else {
-        testFailed(text + " (was " + val + ")");
+        return testFailed(text + " (was " + val + ")");
     }
 }
 
@@ -400,16 +402,19 @@ function shouldBe(_a, _b, quiet)
     }
     var _bv = eval(_b);
 
-    if (exception)
-        testFailed(_a + " should be " + _bv + ". Threw exception " + exception);
-    else if (isResultCorrect(_av, _bv)) {
+    if (exception) {
+        return testFailed(_a + " should be " + _bv + ". Threw exception " + exception);
+    }
+    if (isResultCorrect(_av, _bv)) {
         if (!quiet) {
             testPassed(_a + " is " + _b);
         }
-    } else if (typeof(_av) == typeof(_bv))
-        testFailed(_a + " should be " + _bv + ". Was " + stringify(_av) + ".");
-    else
-        testFailed(_a + " should be " + _bv + " (of type " + typeof _bv + "). Was " + _av + " (of type " + typeof _av + ").");
+        return true;
+    }
+    if (typeof(_av) == typeof(_bv)) {
+        return testFailed(_a + " should be " + _bv + ". Was " + stringify(_av) + ".");
+    }
+    return testFailed(_a + " should be " + _bv + " (of type " + typeof _bv + "). Was " + _av + " (of type " + typeof _av + ").");
 }
 
 function shouldNotBe(_a, _b, quiet)
@@ -425,25 +430,27 @@ function shouldNotBe(_a, _b, quiet)
     }
     var _bv = eval(_b);
 
-    if (exception)
-        testFailed(_a + " should not be " + _bv + ". Threw exception " + exception);
-    else if (!isResultCorrect(_av, _bv)) {
+    if (exception) {
+        return testFailed(_a + " should not be " + _bv + ". Threw exception " + exception);
+    }
+    if (!isResultCorrect(_av, _bv)) {
         if (!quiet) {
             testPassed(_a + " is not " + _b);
         }
-    } else
-        testFailed(_a + " should not be " + _bv + ".");
+        return true;
+    }
+    return testFailed(_a + " should not be " + _bv + ".");
 }
 
-function shouldBeTrue(_a) { shouldBe(_a, "true"); }
-function shouldBeFalse(_a) { shouldBe(_a, "false"); }
-function shouldBeNaN(_a) { shouldBe(_a, "NaN"); }
-function shouldBeNull(_a) { shouldBe(_a, "null"); }
+function shouldBeTrue(_a) { return shouldBe(_a, "true"); }
+function shouldBeFalse(_a) { return shouldBe(_a, "false"); }
+function shouldBeNaN(_a) { return shouldBe(_a, "NaN"); }
+function shouldBeNull(_a) { return shouldBe(_a, "null"); }
 
 function shouldBeEqualToString(a, b)
 {
   var unevaledString = '"' + b.replace(/"/g, "\"") + '"';
-  shouldBe(a, unevaledString);
+  return shouldBe(a, unevaledString);
 }
 
 function shouldEvaluateTo(actual, expected) {
@@ -1260,10 +1267,10 @@ class DataView2 extends DataView {
       return ret;
   }
 
-  getUNorm8 (...args) { return this.getUint8 (...args) / bitmasks( 8); }
-  getUNorm16(...args) { return this.getUint16(...args) / bitmasks(16); }
-  getUNorm32(...args) { return this.getUint32(...args) / bitmasks(32); }
-  getSNorm8 (...args) { return this.getInt8 (...args) / bitmasks( 8-1); }
-  getSNorm16(...args) { return this.getInt16(...args) / bitmasks(16-1); }
-  getSNorm32(...args) { return this.getInt32(...args) / bitmasks(32-1); }
+  getUNorm8 (...args) { return this.getUint8 (...args) / bitsmask( 8); }
+  getUNorm16(...args) { return this.getUint16(...args) / bitsmask(16); }
+  getUNorm32(...args) { return this.getUint32(...args) / bitsmask(32); }
+  getSNorm8 (...args) { return this.getInt8 (...args) / bitsmask( 8-1); }
+  getSNorm16(...args) { return this.getInt16(...args) / bitsmask(16-1); }
+  getSNorm32(...args) { return this.getInt32(...args) / bitsmask(32-1); }
 }

@@ -204,25 +204,27 @@ class JSGL {
    /** @type {Map<string,{bytes_per_channel?:number,bytes_per_pixel?:number, load: DataView_getUint32ish, load_norm?: DataView_getUint32ish>}} */
    static FETCH_INFO_BY_TYPE_NAME = new Map(Object.entries({
       // bytes_per_channel:
-      BYTE: {bytes_per_channel: 1, load: DataView.prototype.getInt8, load_norm: DataView.prototype.getSNorm8},
-      UNSIGNED_BYTE: {bytes_per_channel: 1, load: DataView.prototype.getUInt8, load_norm: DataView.prototype.getUNorm8},
-      SHORT: {bytes_per_channel: 2, load: DataView.prototype.getInt16, load_norm: DataView.prototype.getSNorm16},
-      UNSIGNED_SHORT: {bytes_per_channel: 2, load: DataView.prototype.getUInt16, load_norm: DataView.prototype.getUNorm16},
-      INT: {bytes_per_channel: 4, load: DataView.prototype.getInt32, load_norm: DataView.prototype.getSNorm32},
-      UNSIGNED_INT: {bytes_per_channel: 4, load: DataView.prototype.getUInt32, load_norm: DataView.prototype.getUNorm32},
+      BYTE: {bytes_per_channel: 1, load: DataView2.prototype.getInt8, load_norm: DataView2.prototype.getSNorm8},
+      UNSIGNED_BYTE: {bytes_per_channel: 1, load: DataView2.prototype.getUint8, load_norm: DataView2.prototype.getUNorm8},
+      SHORT: {bytes_per_channel: 2, load: DataView2.prototype.getInt16, load_norm: DataView2.prototype.getSNorm16},
+      UNSIGNED_SHORT: {bytes_per_channel: 2, load: DataView2.prototype.getUint16, load_norm: DataView2.prototype.getUNorm16},
+      INT: {bytes_per_channel: 4, load: DataView2.prototype.getInt32, load_norm: DataView2.prototype.getSNorm32},
+      UNSIGNED_INT: {bytes_per_channel: 4, load: DataView2.prototype.getUint32, load_norm: DataView2.prototype.getUNorm32},
 
-      HALF_FLOAT: {bytes_per_channel: 2, load: DataView.prototype.getFloat16},
-      FLOAT: {bytes_per_channel: 4, load: DataView.prototype.getFloat32},
+      HALF_FLOAT: {bytes_per_channel: 2, load: DataView2.prototype.getFloat16},
+      FLOAT: {bytes_per_channel: 4, load: DataView2.prototype.getFloat32},
 
       // bytes_per_pixel:
-      INT_2_10_10_10_REV: {bytes_per_pixel: 4, load: DataView.getInt10_10_10_2, load_norm: DataView.prototype.getSNorm10_10_10_2},
-      UNSIGNED_INT_2_10_10_10_REV: {bytes_per_pixel: 4, load: DataView.prototype.getUint10_10_10_2, load_norm: DataView.prototype.getUNorm10_10_10_2},
+      INT_2_10_10_10_REV: {bytes_per_pixel: 4, load: DataView2.prototype.getInt10_10_10_2, load_norm: DataView2.prototype.getSNorm10_10_10_2},
+      UNSIGNED_INT_2_10_10_10_REV: {bytes_per_pixel: 4, load: DataView2.prototype.getUint10_10_10_2, load_norm: DataView2.prototype.getUNorm10_10_10_2},
    }));
 
    /** @type {Map<GLenum,string>}*/
    static TYPE_NAME_BY_PNAME = new Map(
-      this.FETCH_INFO_BY_TYPE_NAME.keys().map(
-         type_name => {
+      this.FETCH_INFO_BY_TYPE_NAME.entries().map(
+         ([type_name, fetch_info]) => {
+            console.assert(fetch_info.load, {type_name, fetch_info});
+            console.assert(type_name.includes('FLOAT') || fetch_info.load_norm, {type_name, fetch_info});
             const pname = this.GL[type_name] || this.throwv({pname, type_name});
             return [pname, type_name];
          }
@@ -369,6 +371,7 @@ class JSGL {
       const data_view = buffer_data.data_view;
 
       const fetch_info = JSGL.FETCH_INFO_BY_TYPE_NAME.get(vap.type) || throwv({FETCH_INFO_BY_TYPE, vap});
+      //console.log({fetch_info});
       let fn_DataView_load = fetch_info.load;
       let fetch_result_ctor = Float32Array;
       let possible_f32_quant_error = vap.type.endsWith('INT'); // SHORT and smaller (and Packed) are exact as f32.
@@ -393,48 +396,54 @@ class JSGL {
       const DEFAULT_CHANNEL_VALS = [0,0,0,1]; // w: 1.0f, 1i, or 1u.
       let load_vals;
       if (!fetch_info.bytes_per_channel) {
-          load_vals = fn_load(attrib_byte_offset);
+         load_vals = fn_load(attrib_byte_offset);
       } else {
-          load_vals = range(4).map(
-              i => {
-                  if (i >= num_channels) return DEFAULT_CHANNEL_VALS[i];
-                  const channel_byte_offset = attrib_byte_offset + i*fetch_info.bytes_per_channel;
-                  return fn_load(channel_byte_offset);
-              }
-          );
+         load_vals = range(4).map(
+            i => {
+               if (i >= num_channels) return DEFAULT_CHANNEL_VALS[i];
+               const channel_byte_offset = attrib_byte_offset + i*fetch_info.bytes_per_channel;
+               const load_val = fn_load(channel_byte_offset);
+               console.log({i, num_channels, data_view, channel_byte_offset, load_val});
+               return load_val;
+            }
+         );
       }
 
       let ret = [load_vals];
       console.log({load_vals, fetch_result_ctor});
       if (!(load_vals instanceof fetch_result_ctor)) {
-          console.assert(load_vals.length = 4);
-          const f32s = new Float32Array(4*2); // as [...min, ...max]
-          const u32s = abv_cast(Uint32Array, f32s);
-          let is_exact = true;
-          for (const i of range(4)) {
-              const exact = load_vals[i];
-              f32s[i] = exact;
+         console.assert(load_vals.length = 4);
+         const f32s = new Float32Array(4*2); // as [...min, ...max]
+         const u32s = abv_cast(Uint32Array, f32s);
+         let is_exact = true;
+         for (const i of range(4)) {
+            const exact = load_vals[i];
+            f32s[i] = exact;
 
-              let min_max_delta = 0; // max - min
-              if (f32s[i] != exact) {
-                  is_exact = false;
-                  min_max_delta = Math.sign(exact); // -1 or +1
+            let min_max_delta = 0; // max - min
+            if (f32s[i] != exact) {
+               is_exact = false;
+               min_max_delta = Math.sign(exact); // -1 or +1
 
-                  if (f32s[i] > exact) {
-                      min_max_delta = -min_max_delta;
-                  }
-              }
-              u32s[4+i] = u32s[i] + min_max_delta;
-              console.assert(f32s[i] <= exact    , {failed: 'min <= exact', i, min: f32s[i  ], exact, f32s});
-              console.assert(exact   <= f32s[4+i], {failed: 'exact <= max', i, exact, max: f32s[4+i], f32s});
-          }
-          const mins = f32s.subarray(0, 4);
-          if (is_exact) {
-              ret = [mins];
-          } else {
-              const maxs = f32s.subarray(4, 4+4);
-              ret = [mins, maxs];
-          }
+               if (f32s[i] > exact) {
+                     min_max_delta = -min_max_delta;
+               }
+            }
+            u32s[4+i] = u32s[i] + min_max_delta;
+            console.assert(f32s[i] <= exact    , {failed: 'min <= exact', i, min: f32s[i  ], exact, f32s});
+            console.assert(exact   <= f32s[4+i], {failed: 'exact <= max', i, exact, max: f32s[4+i], f32s});
+            if (f32s[i] > f32s[4+i]) throw {fetch_info, vap, byte_stride_per_attrib, data_view, attrib_byte_offset, f32s, u32s, exact, min_max_delta, is_exact};
+            const ok = (f32s[i] <= exact && exact <= f32s[4+i]);
+            if (!ok) throw {fetch_info, vap, byte_stride_per_attrib, data_view, attrib_byte_offset, f32s, u32s, exact, min_max_delta, is_exact};
+            console.assert(ok, {fetch_info, f32s, u32s, exact, min_max_delta, is_exact});
+         }
+         const mins = f32s.subarray(0, 4);
+         if (is_exact) {
+            ret = [mins];
+         } else {
+            const maxs = f32s.subarray(4, 4+4);
+            ret = [mins, maxs];
+         }
       }
       console.log({ret});
       return ret;
