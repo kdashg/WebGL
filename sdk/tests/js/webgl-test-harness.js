@@ -166,6 +166,17 @@ var log = function(msg) {
   }
 };
 
+// -
+
+async function fetchTextFile(url) {
+  const headers = new Headers({
+    "Content-Type": "text/plain",
+  });
+  const response = await fetch(url, {headers});
+  const text = await response.text();
+  return text;
+}
+
 /**
  * Loads text from an external file. This function is synchronous.
  * @param {string} url The url of the external file.
@@ -198,6 +209,16 @@ var loadTextFileAsynchronous = function(url, callback) {
           text = request.responseText;
         }
         log("loaded: " + url);
+
+        (async () => {
+          const box = globalThis._fetchTextFile_matches = globalThis._fetchTextFile_matches || {good: [], bad: [], urls: []};
+          box.urls.push(url);
+          const text2 = await fetchTextFile(url);
+          console.assert(text == text2, {url, text, text2});
+          const dest = (text == text2) ? box.good : box.bad;
+          dest.push({url, text, text2});
+          console.log(`fetchTextFile: ${box.good.length} good / ${box.urls.length} urls`);
+        })();
         callback(success, text);
       }
     };
@@ -448,6 +469,174 @@ var getFileList = function(url, callback, options) {
   });
 };
 
+// -
+
+function getFileList2(url, callback, options) {
+  var files = [];
+
+  var copyObject = function(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  };
+
+  var toCamelCase = function(str) {
+    return str.replace(/-([a-z])/g, function (g) { return g[1].toUpperCase() });
+  };
+
+  var globalOptions = copyObject(options);
+  globalOptions.defaultVersion = "1.0";
+  globalOptions.defaultMaxVersion = null;
+
+  var getFileListImpl = function(prefix, line, lineNum, hierarchicalOptions, callback) {
+    var files = [];
+
+    var args = line.split(/\s+/);
+    var nonOptions = [];
+    var useTest = true;
+    var testOptions = {};
+    for (var jj = 0; jj < args.length; ++jj) {
+      var arg = args[jj];
+      if (arg[0] == '-') {
+        if (arg[1] != '-') {
+          throw ("bad option at in " + url + ":" + lineNum + ": " + arg);
+        }
+        var option = arg.substring(2);
+        switch (option) {
+          // no argument options.
+          case 'slow':
+            testOptions[toCamelCase(option)] = true;
+            break;
+          // one argument options.
+          case 'min-version':
+          case 'max-version':
+            ++jj;
+            testOptions[toCamelCase(option)] = args[jj];
+            break;
+          default:
+            throw ("bad unknown option '" + option + "' at in " + url + ":" + lineNum + ": " + arg);
+        }
+      } else {
+        nonOptions.push(arg);
+      }
+    }
+    var url = prefix + nonOptions.join(" ");
+
+    if (url.substr(url.length - 4) != '.txt') {
+      var minVersion = testOptions.minVersion;
+      if (!minVersion) {
+        minVersion = hierarchicalOptions.defaultVersion;
+      }
+      var maxVersion = testOptions.maxVersion;
+      if (!maxVersion) {
+        maxVersion = hierarchicalOptions.defaultMaxVersion;
+      }
+      var slow = testOptions.slow;
+      if (!slow) {
+        slow = hierarchicalOptions.defaultSlow;
+      }
+
+      if (globalOptions.fast && slow) {
+        useTest = false;
+      } else if (globalOptions.minVersion) {
+        useTest = greaterThanOrEqualToVersion(minVersion, globalOptions.minVersion);
+      } else if (globalOptions.maxVersion && maxVersion) {
+        useTest = greaterThanOrEqualToVersion(globalOptions.maxVersion, maxVersion);
+      } else {
+        useTest = greaterThanOrEqualToVersion(globalOptions.version, minVersion);
+        if (maxVersion) {
+          useTest = useTest && greaterThanOrEqualToVersion(maxVersion, globalOptions.version);
+        }
+      }
+    }
+
+    if (!useTest) {
+      callback(true, []);
+      return;
+    }
+
+    if (url.substr(url.length - 4) == '.txt') {
+      // If a version was explicity specified pass it down.
+      if (testOptions.minVersion) {
+        hierarchicalOptions.defaultVersion = testOptions.minVersion;
+      }
+      if (testOptions.maxVersion) {
+        hierarchicalOptions.defaultMaxVersion = testOptions.maxVersion;
+      }
+      if (testOptions.slow) {
+        hierarchicalOptions.defaultSlow = testOptions.slow;
+      }
+      loadTextFileAsynchronous(url, function() {
+        return function(success, text) {
+          if (!success) {
+            callback(false, '');
+            return;
+          }
+          var lines = text.split('\n');
+          var prefix = '';
+          var lastSlash = url.lastIndexOf('/');
+          if (lastSlash >= 0) {
+            prefix = url.substr(0, lastSlash + 1);
+          }
+          var fail = false;
+          var count = 1;
+          var index = 0;
+          for (var ii = 0; ii < lines.length; ++ii) {
+            var str = lines[ii].replace(/^\s\s*/, '').replace(/\s\s*$/, '');
+            if (str.length > 4 &&
+                str[0] != '#' &&
+                str[0] != ";" &&
+                str.substr(0, 2) != "//") {
+              ++count;
+              getFileListImpl(prefix, str, ii + 1, copyObject(hierarchicalOptions), function(index) {
+                return function(success, new_files) {
+                  //log("got files: " + new_files.length);
+                  if (success) {
+                    files[index] = new_files;
+                  }
+                  finish(success);
+                };
+              }(index++));
+            }
+          }
+          finish(true);
+
+          function finish(success) {
+            if (!success) {
+              fail = true;
+            }
+            --count;
+            //log("count: " + count);
+            if (!count) {
+              callback(!fail, files);
+            }
+          }
+        }
+      }());
+    } else {
+      files.push(url);
+      callback(true, files);
+    }
+  };
+
+  getFileListImpl('', url, 1, globalOptions, function(success, files) {
+    // flatten
+    var flat = [];
+    flatten(files);
+    function flatten(files) {
+      for (var ii = 0; ii < files.length; ++ii) {
+        var value = files[ii];
+        if (typeof(value) == "string") {
+          flat.push(value);
+        } else {
+          flatten(value);
+        }
+      }
+    }
+    callback(success, flat);
+  });
+};
+
+// -
+
 var FilterURL = (function() {
   var prefix = window.location.pathname;
   prefix = prefix.substring(0, prefix.lastIndexOf("/") + 1);
@@ -479,12 +668,8 @@ var TestHarness = function(iframe, filelistUrl, reportFunc, options) {
   this.quiet = options.quiet;
 
   var that = this;
-  getFileList(filelistUrl, function() {
-    return function(success, files) {
-      that.addFiles_(success, files);
-    };
-  }(), options);
-
+  getFileList(filelistUrl, (success, files) => that.addFiles_(success, files), options);
+  //getFileList2(filelistUrl, (success, files) => that.addFiles_(success, files), options);
 };
 
 TestHarness.reportType = {
